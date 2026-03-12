@@ -13,7 +13,7 @@
 //   LiveAudioStream.start() / .stop()
 // ============================================================================
 
-import LiveAudioStream from 'react-native-audio-pcm-stream';
+import LiveAudioStream from 'react-native-live-audio-stream';
 import { Buffer } from 'buffer';
 import { Platform, PermissionsAndroid } from 'react-native';
 
