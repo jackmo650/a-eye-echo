@@ -16,6 +16,7 @@
     "@react-native-async-storage/async-storage": "^2.1.0",
     "@react-native-community/slider": "^4.5.0",
     "@react-native-ml-kit/translate-text": "^0.5.0",
+    "ajv": "^8.17.1",
     "buffer": "^6.0.3",
     "expo": "~52.0.0",
     "expo-av": "~15.0.0",
