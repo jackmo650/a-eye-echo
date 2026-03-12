@@ -1,25 +1,27 @@
 // ============================================================================
-// Transcription Service — Audio capture → Whisper → transcript segments
-// Phase 2: Full native integration via whisper.rn + react-native-audio-pcm-stream
+// Transcription Service — Audio capture → Whisper → translate → transcript
+// Phase 3: Multi-language + auto-translation pipeline
 //
 // Pipeline:
-//   audioCapture (16kHz PCM) → accumulate chunks → pcmToWav → whisperEngine.transcribe
-//   → filterHallucinations → emit TranscriptSegment → UI
-//
-// The resampling step from WallSpace (48kHz → 16kHz) is eliminated because
-// we capture at 16kHz natively on mobile. The silence detection, hallucination
-// filtering, and chunk accumulation patterns are preserved from the original.
+//   audioCapture (16kHz PCM) → accumulate chunks → pcmToWav
+//   → whisperEngine.transcribe(language) → filterHallucinations
+//   → translationService.translate (if enabled)
+//   → emit TranscriptSegment → UI
 // ============================================================================
 
 import * as FileSystem from 'expo-file-system';
 import type {
   TranscriptionStatus,
   TranscriptionConfig,
+  TranslationConfig,
   TranscriptSegment,
+  WhisperLanguage,
 } from '../types';
-import { DEFAULT_TRANSCRIPTION_CONFIG } from '../types/defaults';
+import { DEFAULT_TRANSCRIPTION_CONFIG, DEFAULT_TRANSLATION_CONFIG } from '../types/defaults';
 import * as WhisperEngine from './whisperEngine';
 import * as AudioCapture from './audioCapture';
+import { onSystemAudioData } from './systemAudioCapture';
+import { getTranslationService } from './translationService';
 
 type TranscriptCallback = (segment: TranscriptSegment) => void;
 type StatusCallback = (status: TranscriptionStatus) => void;
@@ -112,7 +114,7 @@ function pcmToWavBuffer(pcmFloat32: Float32Array, sampleRate: number): ArrayBuff
 
 /** Write WAV ArrayBuffer to a temporary file and return the path. */
 async function writeWavToTempFile(wavBuffer: ArrayBuffer): Promise<string> {
-  const tempDir = `${FileSystem.cacheDirectory}captioncast-audio/`;
+  const tempDir = `${FileSystem.cacheDirectory}aeyeecho-audio/`;
   const dirInfo = await FileSystem.getInfoAsync(tempDir);
   if (!dirInfo.exists) {
     await FileSystem.makeDirectoryAsync(tempDir, { intermediates: true });
@@ -147,6 +149,7 @@ async function cleanupWav(filePath: string): Promise<void> {
 
 export class TranscriptionService {
   private _config: TranscriptionConfig = { ...DEFAULT_TRANSCRIPTION_CONFIG };
+  private _translationConfig: TranslationConfig = { ...DEFAULT_TRANSLATION_CONFIG };
   private _status: TranscriptionStatus = 'idle';
   private _active = false;
   private _sessionStartMs = 0;
@@ -178,12 +181,17 @@ export class TranscriptionService {
     this._config = { ...this._config, ...partial };
   }
 
+  configureTranslation(partial: Partial<TranslationConfig>): void {
+    this._translationConfig = { ...this._translationConfig, ...partial };
+  }
+
   /**
    * Start transcription with full native pipeline:
-   * 1. Download model if needed
-   * 2. Initialize Whisper context (with GPU)
-   * 3. Start microphone audio capture at 16kHz
-   * 4. Begin chunk accumulation → Whisper inference pipeline
+   * 1. Determine correct model for language (multilingual vs .en)
+   * 2. Download model if needed
+   * 3. Initialize Whisper context (with GPU)
+   * 4. Start microphone audio capture at 16kHz
+   * 5. Begin chunk accumulation → Whisper inference pipeline
    */
   async start(
     onModelDownloadProgress?: (percent: number) => void,
@@ -195,12 +203,16 @@ export class TranscriptionService {
     this._setStatus('loading-model');
 
     try {
-      const modelId = this._config.modelSize;
+      // Determine which model to use based on language
+      const language = this._config.autoDetectLanguage ? 'auto' : this._config.language;
+      const modelId = WhisperEngine.getModelForLanguage(this._config.modelSize, language);
+
+      console.log(`[A.EYE.ECHO] Language: ${language}, Model: ${modelId}`);
 
       // Step 1: Download model if not cached
       const isDownloaded = await WhisperEngine.isModelDownloaded(modelId);
       if (!isDownloaded) {
-        console.log(`[CaptionCast] Downloading model ${modelId}...`);
+        console.log(`[A.EYE.ECHO] Downloading model ${modelId}...`);
         await WhisperEngine.downloadModel(modelId, (progress) => {
           onModelDownloadProgress?.(progress.percent);
         });
@@ -209,32 +221,53 @@ export class TranscriptionService {
       if (!this._active) return; // Cancelled during download
 
       // Step 2: Initialize Whisper context with GPU acceleration
-      console.log(`[CaptionCast] Loading model ${modelId}...`);
+      console.log(`[A.EYE.ECHO] Loading model ${modelId}...`);
       await WhisperEngine.loadModel(modelId);
 
       if (!this._active) return; // Cancelled during model load
 
-      // Step 3: Initialize audio capture at 16kHz (Whisper's native rate)
-      await AudioCapture.initAudioCapture();
+      // Step 3: Pre-download translation model if translation is enabled
+      if (this._translationConfig.enabled) {
+        const translationService = getTranslationService();
+        const sourceLang = language === 'auto' ? 'en' : language;
+        await translationService.ensureLanguagePair(
+          sourceLang,
+          this._translationConfig.targetLanguage,
+        );
+      }
 
-      // Step 4: Register PCM data handler
-      this._audioCaptureUnsub = AudioCapture.onPCMData(
-        (samples, sampleRate) => {
-          this._feedPCM(samples, sampleRate);
-        },
-      );
+      // Step 4: Initialize audio source (microphone or system audio)
+      const isSystemAudio = this._config.source.type === 'system-audio';
 
-      // Step 5: Start microphone capture
-      await AudioCapture.startCapture();
+      if (isSystemAudio) {
+        // System audio capture is started externally by SystemAudioPanel.
+        // We just subscribe to the PCM stream here.
+        this._audioCaptureUnsub = onSystemAudioData(
+          (samples, sampleRate) => {
+            this._feedPCM(samples, sampleRate);
+          },
+        );
+      } else {
+        // Standard microphone capture
+        await AudioCapture.initAudioCapture();
 
-      // Step 6: Start chunk flush timer
+        this._audioCaptureUnsub = AudioCapture.onPCMData(
+          (samples, sampleRate) => {
+            this._feedPCM(samples, sampleRate);
+          },
+        );
+
+        await AudioCapture.startCapture();
+      }
+
+      // Step 7: Start chunk flush timer
       this._startChunkTimer();
 
       this._setStatus('active');
-      console.log('[CaptionCast] Transcription active (native Whisper + mic capture)');
+      console.log('[A.EYE.ECHO] Transcription active (native Whisper + mic capture)');
 
     } catch (err) {
-      console.error('[CaptionCast] Failed to start transcription:', err);
+      console.error('[A.EYE.ECHO] Failed to start transcription:', err);
       this._setStatus('error');
       this._active = false;
       this._cleanup();
@@ -247,7 +280,7 @@ export class TranscriptionService {
     this._active = false;
     this._cleanup();
     this._setStatus('idle');
-    console.log('[CaptionCast] Transcription stopped');
+    console.log('[A.EYE.ECHO] Transcription stopped');
   }
 
   /** Pause audio capture (model stays loaded for fast resume). */
@@ -327,7 +360,7 @@ export class TranscriptionService {
 
   /**
    * Concatenate buffered PCM, write WAV, send to Whisper for inference.
-   * Ported from WallSpace _flushPCMToWhisper with real native Whisper calls.
+   * Then optionally translate via ML Kit.
    */
   private async _flushToWhisper(): Promise<void> {
     if (!this._active || this._pcmSampleCount < 100 || this._isTranscribing) return;
@@ -364,20 +397,21 @@ export class TranscriptionService {
 
     try {
       // Convert PCM to WAV and write to temp file
-      // Audio is already at 16kHz from native capture — no resampling needed
       const wavBuffer = pcmToWavBuffer(combined, srcRate);
       wavPath = await writeWavToTempFile(wavBuffer);
 
+      // Determine language for Whisper
+      const language: WhisperLanguage = this._config.autoDetectLanguage
+        ? 'auto'
+        : this._config.language;
+
       console.log(
-        `[CaptionCast] Transcribing ${(totalSamples / srcRate).toFixed(1)}s chunk ` +
-        `(${totalSamples} samples @ ${srcRate}Hz, level: ${rmsDb.toFixed(1)}dB)`,
+        `[A.EYE.ECHO] Transcribing ${(totalSamples / srcRate).toFixed(1)}s chunk ` +
+        `(${totalSamples} samples @ ${srcRate}Hz, level: ${rmsDb.toFixed(1)}dB, lang: ${language})`,
       );
 
       // Run Whisper inference via native module
-      const result = await WhisperEngine.transcribeFile(
-        wavPath,
-        this._config.language,
-      );
+      const result = await WhisperEngine.transcribeFile(wavPath, language);
 
       // Filter hallucinations (same patterns as WallSpace whisperBridge)
       const cleanText = filterHallucinations(result.text);
@@ -386,19 +420,45 @@ export class TranscriptionService {
         const segment: TranscriptSegment = {
           id: nextId(),
           text: cleanText,
+          source: 'speech',
+          detectedLanguage: result.detectedLanguage as WhisperLanguage | undefined,
           startMs,
           endMs,
-          speakerId: null, // Speaker ID will be set by speakerService if camera active
+          speakerId: null,
           isFinal: true,
           confidence: 1.0,
         };
 
-        console.log(`[CaptionCast] Transcript: "${cleanText}"`);
+        // Run translation if enabled
+        if (this._translationConfig.enabled) {
+          try {
+            const translationService = getTranslationService();
+            const sourceLang = (result.detectedLanguage || this._config.language) as string;
+            const targetLang = this._translationConfig.targetLanguage;
+
+            // Don't translate if source and target are the same
+            if (sourceLang !== targetLang) {
+              segment.translatedText = await translationService.translate(
+                cleanText,
+                sourceLang,
+                targetLang,
+              );
+            }
+          } catch (err) {
+            console.error('[A.EYE.ECHO] Translation error:', err);
+            // Don't block caption display if translation fails
+          }
+        }
+
+        console.log(
+          `[A.EYE.ECHO] Transcript: "${cleanText}"` +
+          (segment.translatedText ? ` → "${segment.translatedText}"` : ''),
+        );
 
         for (const cb of this._transcriptCallbacks) cb(segment);
       }
     } catch (err) {
-      console.error('[CaptionCast] Transcription error:', err);
+      console.error('[A.EYE.ECHO] Transcription error:', err);
     } finally {
       this._isTranscribing = false;
       if (wavPath) await cleanupWav(wavPath);
@@ -408,8 +468,10 @@ export class TranscriptionService {
   private _cleanup(): void {
     this._stopChunkTimer();
 
-    // Stop audio capture
-    AudioCapture.stopCapture();
+    // Stop audio capture (only stop mic if we started it)
+    if (this._config.source.type !== 'system-audio') {
+      AudioCapture.stopCapture();
+    }
     if (this._audioCaptureUnsub) {
       this._audioCaptureUnsub();
       this._audioCaptureUnsub = null;

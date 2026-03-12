@@ -1,6 +1,6 @@
 // ============================================================================
 // Sessions Screen — Past session list with export capabilities
-// Browse, search, export, and delete previous transcription sessions.
+// Browse, export, and delete previous transcription sessions.
 // ============================================================================
 
 import React, { useCallback, useEffect, useState } from 'react';
@@ -11,6 +11,7 @@ import {
   TouchableOpacity,
   Alert,
   StyleSheet,
+  ActivityIndicator,
   type ListRenderItem,
 } from 'react-native';
 import * as Sharing from 'expo-sharing';
@@ -21,26 +22,42 @@ import { exportTranscript, getFormatLabel } from '../src/services/exportService'
 import type { TranscriptSession, ExportFormat } from '../src/types';
 
 function formatDuration(ms: number): string {
-  const minutes = Math.floor(ms / 60000);
+  if (ms <= 0) return '0s';
+  const hours = Math.floor(ms / 3600000);
+  const minutes = Math.floor((ms % 3600000) / 60000);
   const seconds = Math.floor((ms % 60000) / 1000);
-  if (minutes === 0) return `${seconds}s`;
-  return `${minutes}m ${seconds}s`;
+  if (hours > 0) return `${hours}h ${minutes}m`;
+  if (minutes > 0) return `${minutes}m ${seconds}s`;
+  return `${seconds}s`;
 }
 
 function formatDate(iso: string): string {
   const d = new Date(iso);
+  const now = new Date();
+  const diffDays = Math.floor((now.getTime() - d.getTime()) / 86400000);
+
+  const time = d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+
+  if (diffDays === 0) return `Today ${time}`;
+  if (diffDays === 1) return `Yesterday ${time}`;
+  if (diffDays < 7) {
+    return d.toLocaleDateString(undefined, { weekday: 'short' }) + ` ${time}`;
+  }
   return d.toLocaleDateString(undefined, {
-    weekday: 'short',
     month: 'short',
     day: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-  });
+  }) + ` ${time}`;
+}
+
+function formatModelLabel(model: string): string {
+  return model.replace('.en', ' EN').replace('tiny', 'Tiny').replace('base', 'Base')
+    .replace('small', 'Small').replace('medium', 'Medium');
 }
 
 export default function SessionsScreen() {
   const { pastSessions, loadPastSessions } = useTranscriptStore();
   const [loading, setLoading] = useState(true);
+  const [exporting, setExporting] = useState<string | null>(null);
 
   // Load sessions from database on mount
   useEffect(() => {
@@ -56,12 +73,13 @@ export default function SessionsScreen() {
 
     Alert.alert(
       'Export Transcript',
-      'Choose export format:',
+      `Export "${session.title}" as:`,
       [
         ...formats.map(format => ({
           text: getFormatLabel(format),
           onPress: async () => {
             try {
+              setExporting(session.id);
               const segments = await db.getSegments(session.id);
               const speakers = await db.getSpeakers(session.id);
 
@@ -78,6 +96,8 @@ export default function SessionsScreen() {
               }
             } catch (err) {
               Alert.alert('Export Failed', String(err));
+            } finally {
+              setExporting(null);
             }
           },
         })),
@@ -89,7 +109,7 @@ export default function SessionsScreen() {
   const handleDelete = useCallback((session: TranscriptSession) => {
     Alert.alert(
       'Delete Session',
-      `Delete "${session.title}"? This cannot be undone.`,
+      `Delete "${session.title}"?\n\nThis includes all transcript segments and speaker data. This cannot be undone.`,
       [
         { text: 'Cancel', style: 'cancel' },
         {
@@ -106,51 +126,75 @@ export default function SessionsScreen() {
   }, [loadPastSessions]);
 
   const renderItem: ListRenderItem<TranscriptSession> = useCallback(
-    ({ item }) => (
-      <View style={styles.sessionCard}>
-        <View style={styles.sessionHeader}>
-          <Text style={styles.sessionTitle} numberOfLines={1}>
-            {item.title}
-          </Text>
-          <Text style={styles.sessionDate}>{formatDate(item.startedAt)}</Text>
-        </View>
+    ({ item }) => {
+      const isExporting = exporting === item.id;
 
-        <View style={styles.sessionMeta}>
-          <Text style={styles.metaText}>
-            {item.segmentCount} segments
-          </Text>
-          <Text style={styles.metaDot}>.</Text>
-          <Text style={styles.metaText}>
-            {formatDuration(item.durationMs)}
-          </Text>
-          <Text style={styles.metaDot}>.</Text>
-          <Text style={styles.metaText}>
-            {item.modelUsed}
-          </Text>
-        </View>
+      return (
+        <View
+          style={styles.sessionCard}
+          accessible
+          accessibilityLabel={`Session: ${item.title}, ${formatDate(item.startedAt)}, ${item.segmentCount} segments, ${formatDuration(item.durationMs)}`}
+        >
+          <View style={styles.sessionHeader}>
+            <Text style={styles.sessionTitle} numberOfLines={1}>
+              {item.title}
+            </Text>
+            <Text style={styles.sessionDate}>{formatDate(item.startedAt)}</Text>
+          </View>
 
-        <View style={styles.sessionActions}>
-          <TouchableOpacity
-            style={styles.actionButton}
-            onPress={() => handleExport(item)}
-          >
-            <Text style={styles.actionText}>Export</Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={[styles.actionButton, styles.deleteButton]}
-            onPress={() => handleDelete(item)}
-          >
-            <Text style={[styles.actionText, styles.deleteText]}>Delete</Text>
-          </TouchableOpacity>
+          <View style={styles.sessionMeta}>
+            <View style={styles.metaChip}>
+              <Text style={styles.metaChipText}>
+                {item.segmentCount} segment{item.segmentCount !== 1 ? 's' : ''}
+              </Text>
+            </View>
+            <View style={styles.metaChip}>
+              <Text style={styles.metaChipText}>
+                {formatDuration(item.durationMs)}
+              </Text>
+            </View>
+            <View style={[styles.metaChip, styles.modelChip]}>
+              <Text style={[styles.metaChipText, styles.modelChipText]}>
+                {formatModelLabel(item.modelUsed)}
+              </Text>
+            </View>
+          </View>
+
+          <View style={styles.sessionActions}>
+            <TouchableOpacity
+              style={styles.exportButton}
+              onPress={() => handleExport(item)}
+              disabled={isExporting}
+              accessible
+              accessibilityRole="button"
+              accessibilityLabel={`Export ${item.title}`}
+            >
+              {isExporting ? (
+                <ActivityIndicator size="small" color="#4FC3F7" />
+              ) : (
+                <Text style={styles.exportText}>Export</Text>
+              )}
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.deleteButton}
+              onPress={() => handleDelete(item)}
+              accessible
+              accessibilityRole="button"
+              accessibilityLabel={`Delete ${item.title}`}
+            >
+              <Text style={styles.deleteText}>Delete</Text>
+            </TouchableOpacity>
+          </View>
         </View>
-      </View>
-    ),
-    [handleExport, handleDelete],
+      );
+    },
+    [handleExport, handleDelete, exporting],
   );
 
   if (loading) {
     return (
       <View style={styles.emptyState}>
+        <ActivityIndicator size="large" color="#4FC3F7" />
         <Text style={styles.emptyText}>Loading sessions...</Text>
       </View>
     );
@@ -159,9 +203,10 @@ export default function SessionsScreen() {
   if (pastSessions.length === 0) {
     return (
       <View style={styles.emptyState}>
+        <Text style={styles.emptyIcon}>-</Text>
         <Text style={styles.emptyTitle}>No Sessions Yet</Text>
         <Text style={styles.emptyText}>
-          Completed transcription sessions will appear here.
+          Completed transcription sessions will appear here.{'\n'}
           You can export them as TXT, SRT, VTT, JSON, or Markdown.
         </Text>
       </View>
@@ -169,13 +214,17 @@ export default function SessionsScreen() {
   }
 
   return (
-    <FlatList
-      data={pastSessions}
-      renderItem={renderItem}
-      keyExtractor={item => item.id}
-      contentContainerStyle={styles.listContent}
-      style={styles.container}
-    />
+    <View style={styles.container}>
+      <Text style={styles.sessionCount}>
+        {pastSessions.length} session{pastSessions.length !== 1 ? 's' : ''}
+      </Text>
+      <FlatList
+        data={pastSessions}
+        renderItem={renderItem}
+        keyExtractor={item => item.id}
+        contentContainerStyle={styles.listContent}
+      />
+    </View>
   );
 }
 
@@ -187,6 +236,13 @@ const styles = StyleSheet.create({
   listContent: {
     padding: 16,
     gap: 12,
+    paddingBottom: 32,
+  },
+  sessionCount: {
+    color: '#555',
+    fontSize: 13,
+    textAlign: 'center',
+    paddingTop: 12,
   },
   emptyState: {
     flex: 1,
@@ -194,12 +250,17 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     padding: 32,
     backgroundColor: '#0A0A0A',
+    gap: 12,
+  },
+  emptyIcon: {
+    color: '#333',
+    fontSize: 48,
+    fontWeight: '200',
   },
   emptyTitle: {
     color: '#FFF',
     fontSize: 20,
     fontWeight: '700',
-    marginBottom: 8,
   },
   emptyText: {
     color: '#888',
@@ -209,9 +270,11 @@ const styles = StyleSheet.create({
   },
   sessionCard: {
     backgroundColor: '#1A1A1A',
-    borderRadius: 12,
+    borderRadius: 14,
     padding: 16,
-    gap: 8,
+    gap: 10,
+    borderWidth: 1,
+    borderColor: '#222',
   },
   sessionHeader: {
     flexDirection: 'row',
@@ -231,37 +294,52 @@ const styles = StyleSheet.create({
   },
   sessionMeta: {
     flexDirection: 'row',
-    alignItems: 'center',
+    flexWrap: 'wrap',
     gap: 6,
   },
-  metaText: {
-    color: '#666',
-    fontSize: 13,
+  metaChip: {
+    backgroundColor: '#252525',
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 6,
   },
-  metaDot: {
-    color: '#444',
-    fontSize: 13,
+  metaChipText: {
+    color: '#999',
+    fontSize: 12,
+    fontWeight: '500',
+  },
+  modelChip: {
+    backgroundColor: '#1A2A3A',
+  },
+  modelChipText: {
+    color: '#4FC3F7',
   },
   sessionActions: {
     flexDirection: 'row',
     gap: 8,
-    marginTop: 4,
+    marginTop: 2,
   },
-  actionButton: {
-    backgroundColor: '#2A2A2A',
-    paddingHorizontal: 16,
-    paddingVertical: 8,
+  exportButton: {
+    backgroundColor: '#1A3A4A',
+    paddingHorizontal: 20,
+    paddingVertical: 10,
     borderRadius: 8,
+    minWidth: 80,
+    alignItems: 'center',
   },
-  actionText: {
+  exportText: {
     color: '#4FC3F7',
     fontSize: 14,
     fontWeight: '600',
   },
   deleteButton: {
-    backgroundColor: 'transparent',
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderRadius: 8,
   },
   deleteText: {
     color: '#E53935',
+    fontSize: 14,
+    fontWeight: '500',
   },
 });

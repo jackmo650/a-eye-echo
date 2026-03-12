@@ -97,7 +97,7 @@ function exportJson(data: ExportData): string {
   const { session, segments, speakers } = data;
 
   return JSON.stringify({
-    captioncast: {
+    aeyeecho: {
       version: '0.1.0',
       exportedAt: new Date().toISOString(),
     },

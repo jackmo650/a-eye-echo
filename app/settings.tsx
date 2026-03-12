@@ -1,9 +1,9 @@
 // ============================================================================
-// Settings Screen — Caption style, transcription, vibration, camera config
-// Organized into logical sections with preview of caption appearance.
+// Settings Screen — Caption style, transcription, language, translation,
+// sign language, vibration, camera config
 // ============================================================================
 
-import React, { useCallback } from 'react';
+import React, { useCallback, useState } from 'react';
 import {
   View,
   Text,
@@ -11,11 +11,23 @@ import {
   TouchableOpacity,
   Switch,
   StyleSheet,
+  TextInput,
 } from 'react-native';
 import Slider from '@react-native-community/slider';
 import { useSettingsStore } from '../src/stores/useSettingsStore';
-import { WHISPER_MODELS, PRESET_THEMES } from '../src/types/defaults';
-import type { WhisperModel, CaptionFont, VibrationIntensity } from '../src/types';
+import {
+  WHISPER_MODELS,
+  WHISPER_LANGUAGES,
+  TRANSLATION_LANGUAGES,
+  PRESET_THEMES,
+} from '../src/types/defaults';
+import type {
+  WhisperModel,
+  WhisperLanguage,
+  CaptionFont,
+  VibrationIntensity,
+  SignLanguageType,
+} from '../src/types';
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
@@ -44,13 +56,33 @@ export default function SettingsScreen() {
     setPosition,
     setActiveTheme,
     updateTranscriptionConfig,
+    updateTranslationConfig,
+    updateSignLanguageConfig,
     updateVibrationConfig,
     setCameraEnabled,
     setCameraPosition,
     setKeepScreenAwake,
   } = useSettingsStore();
 
-  const { caption, transcription, vibration } = settings;
+  const { caption, transcription, translation, signLanguage, vibration } = settings;
+
+  const [languageSearch, setLanguageSearch] = useState('');
+
+  // Filter models: show English-only for English, multilingual otherwise
+  const isNonEnglish = transcription.language !== 'en';
+  const filteredModels = (Object.keys(WHISPER_MODELS) as WhisperModel[]).filter(id => {
+    if (isNonEnglish || transcription.autoDetectLanguage) {
+      return !id.endsWith('.en'); // Only show multilingual
+    }
+    return id.endsWith('.en'); // Only show English
+  });
+
+  // Filter languages for search
+  const filteredLanguages = WHISPER_LANGUAGES.filter(l =>
+    l.label.toLowerCase().includes(languageSearch.toLowerCase()) ||
+    l.nativeName.toLowerCase().includes(languageSearch.toLowerCase()) ||
+    l.code.includes(languageSearch.toLowerCase()),
+  );
 
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.content}>
@@ -61,7 +93,7 @@ export default function SettingsScreen() {
           style={[
             styles.previewText,
             {
-              fontSize: Math.min(caption.fontSize, 40), // Cap preview size
+              fontSize: Math.min(caption.fontSize, 40),
               color: caption.color,
               textShadowColor: caption.outlineColor,
               textShadowRadius: caption.outlineWidth * 2,
@@ -189,11 +221,169 @@ export default function SettingsScreen() {
         </Row>
       </Section>
 
+      {/* ── Language ── */}
+      <Section title="Language">
+        <Row label="Auto-detect language">
+          <Switch
+            value={transcription.autoDetectLanguage}
+            onValueChange={(v) => updateTranscriptionConfig({ autoDetectLanguage: v })}
+            trackColor={{ true: '#4FC3F7', false: '#333' }}
+          />
+        </Row>
+
+        {!transcription.autoDetectLanguage && (
+          <>
+            <TextInput
+              style={styles.searchInput}
+              placeholder="Search languages..."
+              placeholderTextColor="#555"
+              value={languageSearch}
+              onChangeText={setLanguageSearch}
+            />
+            <View style={styles.languageGrid}>
+              {filteredLanguages.map(lang => (
+                <TouchableOpacity
+                  key={lang.code}
+                  style={[
+                    styles.languageButton,
+                    transcription.language === lang.code && styles.languageButtonActive,
+                  ]}
+                  onPress={() => {
+                    updateTranscriptionConfig({ language: lang.code });
+                    setLanguageSearch('');
+                  }}
+                >
+                  <Text
+                    style={[
+                      styles.languageLabel,
+                      transcription.language === lang.code && styles.languageLabelActive,
+                    ]}
+                  >
+                    {lang.nativeName}
+                  </Text>
+                  <Text style={styles.languageCode}>{lang.label}</Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+          </>
+        )}
+      </Section>
+
+      {/* ── Translation ── */}
+      <Section title="Translation">
+        <Row label="Enable auto-translation">
+          <Switch
+            value={translation.enabled}
+            onValueChange={(v) => updateTranslationConfig({ enabled: v })}
+            trackColor={{ true: '#4FC3F7', false: '#333' }}
+          />
+        </Row>
+
+        {translation.enabled && (
+          <>
+            <Row label="Show original text">
+              <Switch
+                value={translation.showOriginal}
+                onValueChange={(v) => updateTranslationConfig({ showOriginal: v })}
+                trackColor={{ true: '#4FC3F7', false: '#333' }}
+              />
+            </Row>
+
+            <Row label="Translate to">
+              <View style={styles.languageGrid}>
+                {TRANSLATION_LANGUAGES.slice(0, 15).map(lang => (
+                  <TouchableOpacity
+                    key={lang.code}
+                    style={[
+                      styles.languageButton,
+                      translation.targetLanguage === lang.code && styles.languageButtonActive,
+                    ]}
+                    onPress={() => updateTranslationConfig({ targetLanguage: lang.code })}
+                  >
+                    <Text
+                      style={[
+                        styles.languageLabel,
+                        translation.targetLanguage === lang.code && styles.languageLabelActive,
+                      ]}
+                    >
+                      {lang.nativeName}
+                    </Text>
+                    <Text style={styles.languageCode}>{lang.code.toUpperCase()}</Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            </Row>
+
+            <Text style={styles.infoText}>
+              Translation models (~30MB each) download on first use.
+            </Text>
+          </>
+        )}
+      </Section>
+
+      {/* ── Sign Language ── */}
+      <Section title="Sign Language (Beta)">
+        <Row label="Enable sign language recognition">
+          <Switch
+            value={signLanguage.enabled}
+            onValueChange={(v) => {
+              updateSignLanguageConfig({ enabled: v });
+              // Sign language requires camera
+              if (v && !settings.cameraEnabled) {
+                setCameraEnabled(true);
+              }
+            }}
+            trackColor={{ true: '#4FC3F7', false: '#333' }}
+          />
+        </Row>
+
+        {signLanguage.enabled && (
+          <>
+            <Row label="Sign Language">
+              <View style={styles.segmentedControl}>
+                {(['asl', 'bsl'] as SignLanguageType[]).map(sl => (
+                  <TouchableOpacity
+                    key={sl}
+                    style={[
+                      styles.segmentButton,
+                      signLanguage.language === sl && styles.segmentButtonActive,
+                    ]}
+                    onPress={() => updateSignLanguageConfig({ language: sl })}
+                  >
+                    <Text
+                      style={[
+                        styles.segmentText,
+                        signLanguage.language === sl && styles.segmentTextActive,
+                      ]}
+                    >
+                      {sl.toUpperCase()}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            </Row>
+
+            <Row label="Show hand overlay">
+              <Switch
+                value={signLanguage.showHandPreview}
+                onValueChange={(v) => updateSignLanguageConfig({ showHandPreview: v })}
+                trackColor={{ true: '#4FC3F7', false: '#333' }}
+              />
+            </Row>
+
+            <Text style={styles.infoText}>
+              Currently supports ASL fingerspelling (A-Z) and common signs.
+              Camera must be enabled and pointed at hands.
+            </Text>
+          </>
+        )}
+      </Section>
+
       {/* ── Transcription ── */}
       <Section title="Transcription">
         <Row label="Whisper Model">
           <View style={styles.modelList}>
-            {(Object.keys(WHISPER_MODELS) as WhisperModel[]).map(modelId => {
+            {filteredModels.map(modelId => {
               const info = WHISPER_MODELS[modelId];
               const isActive = transcription.modelSize === modelId;
               return (
@@ -328,7 +518,7 @@ export default function SettingsScreen() {
       </Section>
 
       <View style={styles.footer}>
-        <Text style={styles.footerText}>CaptionCast v0.1.0</Text>
+        <Text style={styles.footerText}>A.EYE.ECHO v0.3.0</Text>
         <Text style={styles.footerText}>Built with WallSpace.Studio</Text>
       </View>
     </ScrollView>
@@ -422,6 +612,55 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '600',
     textAlign: 'center',
+  },
+  searchInput: {
+    backgroundColor: '#1A1A1A',
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#333',
+    color: '#FFF',
+    fontSize: 14,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    marginBottom: 12,
+  },
+  languageGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 6,
+  },
+  languageButton: {
+    backgroundColor: '#1A1A1A',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#333',
+    minWidth: 80,
+    alignItems: 'center',
+  },
+  languageButtonActive: {
+    backgroundColor: '#1A3A4A',
+    borderColor: '#4FC3F7',
+  },
+  languageLabel: {
+    color: '#CCC',
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  languageLabelActive: {
+    color: '#4FC3F7',
+  },
+  languageCode: {
+    color: '#666',
+    fontSize: 11,
+    marginTop: 1,
+  },
+  infoText: {
+    color: '#555',
+    fontSize: 12,
+    marginTop: 8,
+    fontStyle: 'italic',
   },
   modelList: {
     gap: 8,

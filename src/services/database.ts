@@ -14,7 +14,7 @@ let _db: SQLite.SQLiteDatabase | null = null;
 
 async function getDb(): Promise<SQLite.SQLiteDatabase> {
   if (_db) return _db;
-  _db = await SQLite.openDatabaseAsync('captioncast.db');
+  _db = await SQLite.openDatabaseAsync('aeyeecho.db');
   await _db.execAsync(`
     CREATE TABLE IF NOT EXISTS sessions (
       id TEXT PRIMARY KEY,

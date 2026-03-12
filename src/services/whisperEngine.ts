@@ -1,9 +1,8 @@
 // ============================================================================
 // Whisper Engine — Native whisper.cpp integration via whisper.rn
 //
-// Replaces the Electron subprocess bridge (whisperBridge.ts) with direct
-// native module calls. Uses whisper.rn which wraps whisper.cpp with
-// CoreML/Metal acceleration on iOS and GPU support on Android.
+// Supports both English-only (.en) and multilingual models.
+// Multilingual models support 99 languages with auto-detection.
 //
 // Architecture:
 //   initWhisper(modelPath) → WhisperContext
@@ -15,22 +14,30 @@
 import { initWhisper, type WhisperContext } from 'whisper.rn';
 import * as FileSystem from 'expo-file-system';
 import { Platform } from 'react-native';
-import type { WhisperModel } from '../types';
+import type { WhisperModel, WhisperLanguage } from '../types';
 
 // ── Model Registry ──────────────────────────────────────────────────────────
 
 const MODEL_URLS: Record<WhisperModel, string> = {
-  'tiny.en': 'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.en.bin',
-  'base.en': 'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin',
-  'small.en': 'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.en.bin',
+  'tiny.en':   'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.en.bin',
+  'tiny':      'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.bin',
+  'base.en':   'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin',
+  'base':      'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin',
+  'small.en':  'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.en.bin',
+  'small':     'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.bin',
   'medium.en': 'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-medium.en.bin',
+  'medium':    'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-medium.bin',
 };
 
 const MODEL_SIZES: Record<WhisperModel, number> = {
-  'tiny.en': 75_000_000,
-  'base.en': 142_000_000,
-  'small.en': 466_000_000,
+  'tiny.en':   75_000_000,
+  'tiny':      75_000_000,
+  'base.en':   142_000_000,
+  'base':      142_000_000,
+  'small.en':  466_000_000,
+  'small':     466_000_000,
   'medium.en': 1_500_000_000,
+  'medium':    1_500_000_000,
 };
 
 export type ModelDownloadProgress = {
@@ -57,6 +64,36 @@ function getModelsDir(): string {
 
 function getModelPath(modelId: WhisperModel): string {
   return `${getModelsDir()}ggml-${modelId}.bin`;
+}
+
+// ── Helpers ─────────────────────────────────────────────────────────────────
+
+/** Check if a model is English-only (.en suffix) */
+export function isEnglishOnly(modelId: WhisperModel): boolean {
+  return modelId.endsWith('.en');
+}
+
+/** Get the multilingual variant of a model (drops .en suffix) */
+export function getMultilingualVariant(modelId: WhisperModel): WhisperModel {
+  if (modelId.endsWith('.en')) {
+    return modelId.replace('.en', '') as WhisperModel;
+  }
+  return modelId;
+}
+
+/** Get the best model for a language — use .en for English, multilingual otherwise */
+export function getModelForLanguage(
+  baseModel: WhisperModel,
+  language: WhisperLanguage,
+): WhisperModel {
+  if (language === 'en') {
+    // Prefer .en variant for English (slightly better accuracy)
+    const enVariant = `${getMultilingualVariant(baseModel)}.en` as WhisperModel;
+    if (enVariant in MODEL_URLS) return enVariant;
+    return baseModel;
+  }
+  // For non-English or auto-detect, use multilingual model
+  return getMultilingualVariant(baseModel);
 }
 
 // ── Public API ──────────────────────────────────────────────────────────────
@@ -183,15 +220,18 @@ export async function loadModel(modelId: WhisperModel): Promise<void> {
 
 /**
  * Transcribe a WAV file using the loaded Whisper context.
- * Returns the transcription result text.
+ * Returns the transcription result text and detected language.
  *
- * This is the core inference call — equivalent to WallSpace's
- * whisperBridge processWavFile() but via native module instead of subprocess.
+ * For multilingual models, pass language='auto' to auto-detect.
  */
 export async function transcribeFile(
   wavFilePath: string,
-  language: string = 'en',
-): Promise<{ text: string; segments: Array<{ text: string; t0: number; t1: number }> }> {
+  language: WhisperLanguage = 'en',
+): Promise<{
+  text: string;
+  segments: Array<{ text: string; t0: number; t1: number }>;
+  detectedLanguage?: string;
+}> {
   if (!_context) {
     throw new Error('No Whisper context loaded. Call loadModel() first.');
   }
@@ -205,7 +245,7 @@ export async function transcribeFile(
 
   try {
     const { stop, promise } = _context.transcribe(wavFilePath, {
-      language,
+      language: language === 'auto' ? undefined : language,
       maxThreads: Platform.OS === 'ios' ? 4 : 2,
     });
 

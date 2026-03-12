@@ -46,7 +46,7 @@ export async function requestMicrophonePermission(): Promise<boolean> {
         PermissionsAndroid.PERMISSIONS.RECORD_AUDIO,
         {
           title: 'Microphone Permission',
-          message: 'CaptionCast needs microphone access to transcribe live speech into captions.',
+          message: 'A.EYE.ECHO needs microphone access to transcribe live speech into captions.',
           buttonPositive: 'Allow',
           buttonNegative: 'Deny',
         },

@@ -9,6 +9,8 @@ import type {
   CaptionStyle,
   CaptionTheme,
   TranscriptionConfig,
+  TranslationConfig,
+  SignLanguageConfig,
   VibrationConfig,
   CameraPosition,
 } from '../types';
@@ -30,6 +32,12 @@ interface SettingsState {
 
   // ── Transcription ──
   updateTranscriptionConfig: (partial: Partial<TranscriptionConfig>) => void;
+
+  // ── Translation ──
+  updateTranslationConfig: (partial: Partial<TranslationConfig>) => void;
+
+  // ── Sign Language ──
+  updateSignLanguageConfig: (partial: Partial<SignLanguageConfig>) => void;
 
   // ── Vibration ──
   updateVibrationConfig: (partial: Partial<VibrationConfig>) => void;
@@ -90,6 +98,20 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     settings: {
       ...state.settings,
       transcription: { ...state.settings.transcription, ...partial },
+    },
+  })),
+
+  updateTranslationConfig: (partial) => set(state => ({
+    settings: {
+      ...state.settings,
+      translation: { ...state.settings.translation, ...partial },
+    },
+  })),
+
+  updateSignLanguageConfig: (partial) => set(state => ({
+    settings: {
+      ...state.settings,
+      signLanguage: { ...state.settings.signLanguage, ...partial },
     },
   })),
 

@@ -1,16 +1,72 @@
 // ============================================================================
-// Root Layout — App-level navigation structure
+// Root Layout — App-level navigation + initialization
 // Tab-based navigation: Live | Transcript | Sessions | Settings
+// Handles: settings persistence, onboarding, keep-awake, error boundary
 // ============================================================================
 
-import React from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { Tabs } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
+import { useKeepAwake } from 'expo-keep-awake';
+import { ErrorBoundary } from '../src/components/ErrorBoundary';
+import { OnboardingModal } from '../src/components/OnboardingModal';
+import { useSettingsStore } from '../src/stores/useSettingsStore';
+import {
+  loadPersistedSettings,
+  persistSettings,
+  persistThemes,
+  isOnboardingComplete,
+  completeOnboarding,
+} from '../src/services/settingsPersistence';
 
-export default function RootLayout() {
+function AppContent() {
+  const { settings, themes, loadSettings } = useSettingsStore();
+  const [showOnboarding, setShowOnboarding] = useState(false);
+  const [initialized, setInitialized] = useState(false);
+
+  // Keep screen awake when enabled
+  useKeepAwake(settings.keepScreenAwake ? 'aeyeecho' : undefined);
+
+  // Load persisted settings on mount
+  useEffect(() => {
+    (async () => {
+      const { settings: loaded, themes: loadedThemes } = await loadPersistedSettings();
+      loadSettings(loaded);
+
+      const onboarded = await isOnboardingComplete();
+      if (!onboarded) {
+        setShowOnboarding(true);
+      }
+      setInitialized(true);
+    })();
+  }, [loadSettings]);
+
+  // Auto-save settings when they change (after initial load)
+  useEffect(() => {
+    if (!initialized) return;
+    persistSettings(settings);
+  }, [settings, initialized]);
+
+  // Auto-save themes when they change
+  useEffect(() => {
+    if (!initialized) return;
+    persistThemes(themes);
+  }, [themes, initialized]);
+
+  const handleOnboardingComplete = useCallback(async () => {
+    setShowOnboarding(false);
+    await completeOnboarding();
+  }, []);
+
   return (
     <>
       <StatusBar style="light" />
+
+      <OnboardingModal
+        visible={showOnboarding}
+        onComplete={handleOnboardingComplete}
+      />
+
       <Tabs
         screenOptions={{
           headerStyle: { backgroundColor: '#0A0A0A' },
@@ -21,14 +77,16 @@ export default function RootLayout() {
           },
           tabBarActiveTintColor: '#4FC3F7',
           tabBarInactiveTintColor: '#666',
+          tabBarAccessibilityLabel: 'Main navigation',
         }}
       >
         <Tabs.Screen
           name="index"
           options={{
             title: 'Live',
-            headerTitle: 'CaptionCast',
+            headerTitle: 'A.EYE.ECHO',
             tabBarLabel: 'Live',
+            tabBarAccessibilityLabel: 'Live captioning screen',
           }}
         />
         <Tabs.Screen
@@ -36,6 +94,7 @@ export default function RootLayout() {
           options={{
             title: 'Transcript',
             tabBarLabel: 'Transcript',
+            tabBarAccessibilityLabel: 'Current session transcript',
           }}
         />
         <Tabs.Screen
@@ -43,6 +102,7 @@ export default function RootLayout() {
           options={{
             title: 'Sessions',
             tabBarLabel: 'Sessions',
+            tabBarAccessibilityLabel: 'Past transcription sessions',
           }}
         />
         <Tabs.Screen
@@ -50,9 +110,18 @@ export default function RootLayout() {
           options={{
             title: 'Settings',
             tabBarLabel: 'Settings',
+            tabBarAccessibilityLabel: 'App settings and customization',
           }}
         />
       </Tabs>
     </>
+  );
+}
+
+export default function RootLayout() {
+  return (
+    <ErrorBoundary>
+      <AppContent />
+    </ErrorBoundary>
   );
 }

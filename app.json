@@ -1,20 +1,20 @@
 {
   "expo": {
-    "name": "CaptionCast",
-    "slug": "captioncast",
-    "version": "0.2.0",
+    "name": "A.EYE.ECHO",
+    "slug": "a-eye-echo",
+    "version": "0.3.0",
     "orientation": "default",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "dark",
     "newArchEnabled": true,
-    "scheme": "captioncast",
+    "scheme": "aeyeecho",
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.wallspace.captioncast",
+      "bundleIdentifier": "com.wallspace.aeyeecho",
       "infoPlist": {
-        "NSMicrophoneUsageDescription": "CaptionCast needs microphone access to transcribe live speech into captions.",
-        "NSSpeechRecognitionUsageDescription": "CaptionCast uses on-device speech recognition for live captioning.",
-        "NSCameraUsageDescription": "CaptionCast uses the camera for visual speaker identification via face detection."
+        "NSMicrophoneUsageDescription": "A.EYE.ECHO needs microphone access to transcribe live speech into captions.",
+        "NSSpeechRecognitionUsageDescription": "A.EYE.ECHO uses on-device speech recognition for live captioning.",
+        "NSCameraUsageDescription": "A.EYE.ECHO uses the camera for visual speaker identification via face detection."
       }
     },
     "android": {
@@ -22,7 +22,7 @@
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#000000"
       },
-      "package": "com.wallspace.captioncast",
+      "package": "com.wallspace.aeyeecho",
       "permissions": [
         "RECORD_AUDIO",
         "CAMERA"
@@ -34,13 +34,13 @@
       [
         "expo-av",
         {
-          "microphonePermission": "CaptionCast needs microphone access to transcribe live speech into captions."
+          "microphonePermission": "A.EYE.ECHO needs microphone access to transcribe live speech into captions."
         }
       ],
       [
         "react-native-vision-camera",
         {
-          "cameraPermissionText": "CaptionCast uses the camera for visual speaker identification.",
+          "cameraPermissionText": "A.EYE.ECHO uses the camera for visual speaker identification.",
           "enableFrameProcessors": true
         }
       ]

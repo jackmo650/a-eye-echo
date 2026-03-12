@@ -1,5 +1,5 @@
 // ============================================================================
-// CaptionCast — Core Types
+// A.EYE.ECHO — Core Types
 // Ported from WallSpace.Studio captionRenderer.ts + transcriptionService.ts
 // and expanded for mobile accessibility use cases.
 // ============================================================================
@@ -13,12 +13,24 @@ export type TranscriptionStatus =
   | 'paused'
   | 'error';
 
-export type WhisperModel = 'tiny.en' | 'base.en' | 'small.en' | 'medium.en';
+export type WhisperModel =
+  | 'tiny.en' | 'base.en' | 'small.en' | 'medium.en'
+  | 'tiny' | 'base' | 'small' | 'medium';
+
+// Top 30 languages supported by Whisper (of 99 total)
+export type WhisperLanguage =
+  | 'auto' | 'en' | 'es' | 'fr' | 'de' | 'it' | 'pt' | 'nl' | 'pl' | 'ru'
+  | 'uk' | 'zh' | 'ja' | 'ko' | 'ar' | 'hi' | 'bn' | 'tr' | 'vi' | 'th'
+  | 'sv' | 'da' | 'fi' | 'no' | 'el' | 'he' | 'id' | 'ms' | 'ro' | 'cs'
+  | 'hu';
 
 export type AudioSource =
   | { type: 'microphone'; deviceId?: string }
-  | { type: 'system-audio' }
-  | { type: 'bluetooth' };
+  | { type: 'system-audio' }          // Capture audio from other apps (Meet, Discord, Zoom)
+  | { type: 'bluetooth' }
+  | { type: 'url'; url: string }      // Video/audio URL → download → transcribe
+  | { type: 'youtube'; url: string }   // YouTube URL → resolve → transcribe
+  | { type: 'stream'; url: string };   // HLS/DASH live stream
 
 export interface TranscriptionConfig {
   /** Audio source to capture from */
@@ -27,8 +39,10 @@ export interface TranscriptionConfig {
   chunkDurationSec: number;
   /** Whisper model size */
   modelSize: WhisperModel;
-  /** Language code (default 'en') */
-  language: string;
+  /** Language code (default 'en', 'auto' for detection) */
+  language: WhisperLanguage;
+  /** Auto-detect spoken language (overrides language setting) */
+  autoDetectLanguage: boolean;
 }
 
 // ── Transcript Segments ─────────────────────────────────────────────────────
@@ -37,6 +51,12 @@ export interface TranscriptSegment {
   id: string;
   /** The transcribed text */
   text: string;
+  /** Translated text (if translation enabled) */
+  translatedText?: string;
+  /** Detected language code (when auto-detect is on) */
+  detectedLanguage?: WhisperLanguage;
+  /** Input source: speech (Whisper), sign-language (MediaPipe) */
+  source?: 'speech' | 'sign-language';
   /** Timestamp from session start (ms) */
   startMs: number;
   /** Timestamp end (ms) */
@@ -175,12 +195,57 @@ export interface FaceLandmarks {
   mouthBottom: { x: number; y: number };
 }
 
+// ── Translation ──────────────────────────────────────────────────────────────
+
+export interface TranslationConfig {
+  /** Enable real-time translation */
+  enabled: boolean;
+  /** Target language for translation */
+  targetLanguage: string;
+  /** Show original text alongside translation */
+  showOriginal: boolean;
+}
+
+// ── Sign Language ────────────────────────────────────────────────────────────
+
+export type SignLanguageType = 'asl' | 'bsl';
+
+export interface SignLanguageConfig {
+  /** Enable sign language recognition */
+  enabled: boolean;
+  /** Which sign language system */
+  language: SignLanguageType;
+  /** Show hand landmark overlay on camera preview */
+  showHandPreview: boolean;
+}
+
+export interface HandLandmark {
+  x: number;
+  y: number;
+  z: number;
+}
+
+export interface HandLandmarks {
+  /** 21 keypoints per hand */
+  points: HandLandmark[];
+  handedness: 'left' | 'right';
+}
+
+export interface SignRecognition {
+  /** Recognized sign (letter or word) */
+  sign: string;
+  confidence: number;
+  timestamp: number;
+}
+
 // ── App Settings ────────────────────────────────────────────────────────────
 
 export interface AppSettings {
   transcription: TranscriptionConfig;
   caption: CaptionStyle;
   vibration: VibrationConfig;
+  translation: TranslationConfig;
+  signLanguage: SignLanguageConfig;
   /** Active theme ID */
   activeThemeId: string;
   /** Camera for speaker identification */

@@ -77,16 +77,28 @@ export function TranscriptList({
           onPress={() => onSegmentPress?.(item)}
           activeOpacity={0.6}
           accessible
-          accessibilityLabel={`${speaker?.label || 'Unknown'} at ${formatTime(item.startMs)}: ${item.text}`}
+          accessibilityLabel={`${speaker?.label || 'Unknown'} at ${formatTime(item.startMs)}: ${item.translatedText || item.text}`}
         >
           <Text style={styles.timestamp}>{formatTime(item.startMs)}</Text>
           <View style={styles.segmentContent}>
-            {showSpeaker && speaker && (
-              <Text style={[styles.speakerName, { color: speaker.color }]}>
-                {speaker.label}
-              </Text>
+            <View style={styles.segmentHeader}>
+              {showSpeaker && speaker && (
+                <Text style={[styles.speakerName, { color: speaker.color }]}>
+                  {speaker.label}
+                </Text>
+              )}
+              {item.source === 'sign-language' && (
+                <Text style={styles.sourceTag}>ASL</Text>
+              )}
+            </View>
+            {item.translatedText ? (
+              <>
+                <Text style={styles.segmentText}>{item.translatedText}</Text>
+                <Text style={styles.originalText}>{item.text}</Text>
+              </>
+            ) : (
+              <Text style={styles.segmentText}>{item.text}</Text>
             )}
-            <Text style={styles.segmentText}>{item.text}</Text>
           </View>
         </TouchableOpacity>
       );
@@ -177,15 +189,38 @@ const styles = StyleSheet.create({
   segmentContent: {
     flex: 1,
   },
+  segmentHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
   speakerName: {
     fontSize: 13,
     fontWeight: '700',
+    marginBottom: 2,
+  },
+  sourceTag: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: '#4FC3F7',
+    backgroundColor: 'rgba(79, 195, 247, 0.15)',
+    paddingHorizontal: 5,
+    paddingVertical: 1,
+    borderRadius: 3,
+    overflow: 'hidden',
     marginBottom: 2,
   },
   segmentText: {
     color: '#E0E0E0',
     fontSize: 16,
     lineHeight: 22,
+  },
+  originalText: {
+    color: '#777',
+    fontSize: 13,
+    lineHeight: 18,
+    fontStyle: 'italic',
+    marginTop: 2,
   },
   scrollToBottomButton: {
     position: 'absolute',

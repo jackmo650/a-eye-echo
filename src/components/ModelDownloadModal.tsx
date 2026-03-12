@@ -8,6 +8,8 @@ import { View, Text, StyleSheet, Modal, ActivityIndicator } from 'react-native';
 import type { WhisperModel } from '../types';
 import { WHISPER_MODELS } from '../types/defaults';
 
+type ModelInfoKey = keyof typeof WHISPER_MODELS;
+
 interface ModelDownloadModalProps {
   visible: boolean;
   modelId: WhisperModel;
@@ -19,7 +21,7 @@ export function ModelDownloadModal({
   modelId,
   progress,
 }: ModelDownloadModalProps) {
-  const modelInfo = WHISPER_MODELS[modelId];
+  const modelInfo = WHISPER_MODELS[modelId as ModelInfoKey] || { label: modelId, size: '' };
 
   return (
     <Modal

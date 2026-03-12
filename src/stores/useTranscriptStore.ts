@@ -94,7 +94,7 @@ export const useTranscriptStore = create<TranscriptState>((set, get) => ({
 
   addSegment: (segment) => set(state => ({
     segments: [...state.segments, segment],
-    currentText: segment.text,
+    currentText: segment.translatedText || segment.text,
     currentSession: state.currentSession
       ? { ...state.currentSession, segmentCount: state.segments.length + 1 }
       : null,
