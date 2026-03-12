@@ -13,9 +13,16 @@
 //   LiveAudioStream.start() / .stop()
 // ============================================================================
 
-import LiveAudioStream from 'react-native-live-audio-stream';
 import { Buffer } from 'buffer';
 import { Platform, PermissionsAndroid } from 'react-native';
+
+// Dynamic import — react-native-live-audio-stream requires native build
+let LiveAudioStream: any = null;
+try {
+  LiveAudioStream = require('react-native-live-audio-stream').default;
+} catch {
+  console.warn('[AudioCapture] react-native-live-audio-stream not available — requires development build');
+}
 
 type PCMCallback = (samples: Float32Array, sampleRate: number) => void;
 

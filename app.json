@@ -45,13 +45,6 @@
         {
           "microphonePermission": "A.EYE.ECHO needs microphone access to transcribe live speech into captions."
         }
-      ],
-      [
-        "react-native-vision-camera",
-        {
-          "cameraPermissionText": "A.EYE.ECHO uses the camera for visual speaker identification.",
-          "enableFrameProcessors": true
-        }
       ]
     ],
     "extra": {

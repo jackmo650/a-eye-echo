@@ -11,10 +11,20 @@
 // Model management: download from HuggingFace, cache in app documents dir.
 // ============================================================================
 
-import { initWhisper, type WhisperContext } from 'whisper.rn';
 import * as FileSystem from 'expo-file-system';
 import { Platform } from 'react-native';
 import type { WhisperModel, WhisperLanguage } from '../types';
+
+// Dynamic import — whisper.rn requires native build (expo prebuild)
+let initWhisper: any = null;
+try {
+  const whisperModule = require('whisper.rn');
+  initWhisper = whisperModule.initWhisper;
+} catch {
+  console.warn('[WhisperEngine] whisper.rn not available — requires development build');
+}
+
+type WhisperContext = any;
 
 // ── Model Registry ──────────────────────────────────────────────────────────
 
