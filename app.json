@@ -19,7 +19,8 @@
       "infoPlist": {
         "NSMicrophoneUsageDescription": "A.EYE.ECHO needs microphone access to transcribe live speech into captions.",
         "NSSpeechRecognitionUsageDescription": "A.EYE.ECHO uses on-device speech recognition for live captioning.",
-        "NSCameraUsageDescription": "A.EYE.ECHO uses the camera for visual speaker identification."
+        "NSCameraUsageDescription": "A.EYE.ECHO uses the camera for visual speaker identification.",
+        "ITSAppUsesNonExemptEncryption": false
       }
     },
     "android": {
