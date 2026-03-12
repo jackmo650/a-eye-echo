@@ -8,6 +8,11 @@
     "userInterfaceStyle": "dark",
     "newArchEnabled": true,
     "scheme": "aeyeecho",
+    "splash": {
+      "image": "./assets/splash-icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#000000"
+    },
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.wallspace.aeyeecho",
