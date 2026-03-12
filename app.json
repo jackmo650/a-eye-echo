@@ -19,7 +19,7 @@
       "infoPlist": {
         "NSMicrophoneUsageDescription": "A.EYE.ECHO needs microphone access to transcribe live speech into captions.",
         "NSSpeechRecognitionUsageDescription": "A.EYE.ECHO uses on-device speech recognition for live captioning.",
-        "NSCameraUsageDescription": "A.EYE.ECHO uses the camera for visual speaker identification via face detection."
+        "NSCameraUsageDescription": "A.EYE.ECHO uses the camera for visual speaker identification."
       }
     },
     "android": {
@@ -30,7 +30,10 @@
       "package": "com.wallspace.aeyeecho",
       "permissions": [
         "RECORD_AUDIO",
-        "CAMERA"
+        "CAMERA",
+        "android.permission.RECORD_AUDIO",
+        "android.permission.MODIFY_AUDIO_SETTINGS",
+        "android.permission.CAMERA"
       ]
     },
     "plugins": [
@@ -49,6 +52,15 @@
           "enableFrameProcessors": true
         }
       ]
-    ]
+    ],
+    "extra": {
+      "router": {
+        "origin": false
+      },
+      "eas": {
+        "projectId": "4d890bd6-af58-46ba-82d9-d8a1e9501388"
+      }
+    },
+    "owner": "wallspace.studio"
   }
 }
