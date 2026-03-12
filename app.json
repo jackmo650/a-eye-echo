@@ -1,0 +1,42 @@
+{
+  "expo": {
+    "name": "CaptionCast",
+    "slug": "captioncast",
+    "version": "0.1.0",
+    "orientation": "default",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "dark",
+    "newArchEnabled": true,
+    "scheme": "captioncast",
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.wallspace.captioncast",
+      "infoPlist": {
+        "NSMicrophoneUsageDescription": "CaptionCast needs microphone access to transcribe live speech into captions.",
+        "NSSpeechRecognitionUsageDescription": "CaptionCast uses on-device speech recognition for live captioning.",
+        "NSCameraUsageDescription": "CaptionCast uses the camera for visual speaker identification."
+      }
+    },
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#000000"
+      },
+      "package": "com.wallspace.captioncast",
+      "permissions": [
+        "RECORD_AUDIO",
+        "CAMERA"
+      ]
+    },
+    "plugins": [
+      "expo-router",
+      "expo-sqlite",
+      [
+        "expo-av",
+        {
+          "microphonePermission": "CaptionCast needs microphone access to transcribe live speech into captions."
+        }
+      ]
+    ]
+  }
+}
