@@ -1,115 +1,210 @@
 // ============================================================================
-// Speaker Identification Service — Camera-based face detection + lip-sync
+// Speaker Identification Service — Camera face detection + lip-sync correlation
 //
-// Phase 2 implementation plan:
-//   - iOS: Apple Vision (VNDetectFaceRectangles + VNGenerateFaceEmbeddings)
-//   - Android: ML Kit Face Detection + FaceNet (TFLite)
+// Phase 2: Real implementation using react-native-vision-camera + MLKit
 //
-// Architecture:
-//   Camera Feed → Face Detection → Face Embeddings → Clustering
-//                                → Lip Movement → Correlate with Audio
-//                                                → Speaker Attribution
+// Pipeline:
+//   Camera frame → MLKit Face Detection (landmarks + tracking) →
+//   Lip movement delta → Correlate with audio amplitude →
+//   Speaker attribution → Emit speaker ID with transcript segment
 //
 // All processing on-device. No photos uploaded. Face data stays local.
+//
+// Dependencies:
+//   - react-native-vision-camera (camera access + frame processors)
+//   - react-native-vision-camera-face-detector (MLKit face detection plugin)
+//   - react-native-worklets-core (frame processor worklets)
 // ============================================================================
 
-import type { Speaker, FaceDetection, CameraPosition } from '../types';
+import type { Speaker, FaceDetection, FaceLandmarks, CameraPosition } from '../types';
 
 export type SpeakerDetectionCallback = (
   speakerId: string,
   face: FaceDetection,
 ) => void;
 
+// ── Face Tracking State ─────────────────────────────────────────────────────
+
+interface TrackedFace {
+  trackingId: number;
+  speakerId: string;
+  speaker: Speaker;
+  mouthOpennessHistory: number[];
+  lipSyncScore: number;
+  lastSeenMs: number;
+}
+
+// ── Speaker Colors ──────────────────────────────────────────────────────────
+
+const SPEAKER_COLORS = [
+  '#4FC3F7', '#FFB74D', '#81C784', '#E57373',
+  '#BA68C8', '#FFD54F', '#4DB6AC', '#F06292',
+];
+
 export class SpeakerService {
   private _active = false;
   private _cameraPosition: CameraPosition = 'front';
-  private _knownSpeakers: Map<string, Speaker> = new Map();
+  private _trackedFaces: Map<number, TrackedFace> = new Map();
   private _callbacks: SpeakerDetectionCallback[] = [];
   private _nextSpeakerId = 1;
 
-  // Lip-sync correlation state
-  private _lastMouthOpenness: Map<string, number[]> = new Map();
+  // Audio amplitude for lip-sync correlation
   private _audioAmplitudeHistory: number[] = [];
+  private _isSpeechActive = false;
+
+  // Stale face cleanup interval
+  private _cleanupTimer: ReturnType<typeof setInterval> | null = null;
 
   get isActive(): boolean { return this._active; }
+  get cameraPosition(): CameraPosition { return this._cameraPosition; }
 
   /**
    * Start camera-based speaker detection.
-   * TODO: Phase 2 — integrate with native face detection module
+   * The actual camera + frame processor is managed by the CameraFaceDetector
+   * component — this service handles the logic layer.
    */
-  async start(cameraPosition: CameraPosition = 'front'): Promise<void> {
+  start(cameraPosition: CameraPosition = 'front'): void {
     this._cameraPosition = cameraPosition;
     this._active = true;
-    console.log(`[SpeakerService] Started with ${cameraPosition} camera`);
 
-    // TODO: Phase 2
-    // - Request camera permission
-    // - Start face detection frame processing
-    // - Initialize face embedding model
+    // Clean up stale faces every 5 seconds
+    this._cleanupTimer = setInterval(() => this._cleanupStaleFaces(), 5000);
+
+    console.log(`[SpeakerService] Started with ${cameraPosition} camera`);
   }
 
   stop(): void {
     this._active = false;
-    this._lastMouthOpenness.clear();
+    this._trackedFaces.clear();
     this._audioAmplitudeHistory = [];
+
+    if (this._cleanupTimer) {
+      clearInterval(this._cleanupTimer);
+      this._cleanupTimer = null;
+    }
+
     console.log('[SpeakerService] Stopped');
   }
 
   /**
-   * Process a camera frame for face detection.
-   * Called by the camera capture hook at ~15fps.
+   * Process detected faces from MLKit frame processor.
+   * Called by the CameraFaceDetector component with each frame's results.
    *
-   * TODO: Phase 2 — implement with native face detection
+   * MLKit Face object shape (from react-native-vision-camera-face-detector):
+   *   { bounds, landmarks, trackingId, smilingProbability, ... }
    */
-  processFrame(_frameData: unknown): FaceDetection[] {
+  processFaces(faces: MLKitFace[]): FaceDetection[] {
     if (!this._active) return [];
 
-    // Placeholder — Phase 2 will run face detection here
-    // 1. Detect faces → bounding boxes + landmarks
-    // 2. Extract face embeddings (128-dim vectors)
-    // 3. Match embeddings to known speakers (cosine similarity > 0.7)
-    // 4. Detect lip movement (mouth landmark delta)
-    // 5. Correlate lip movement with audio amplitude
-    // 6. Emit speaker identification events
+    const now = Date.now();
+    const detections: FaceDetection[] = [];
 
-    return [];
+    for (const face of faces) {
+      const trackingId = face.trackingId ?? -1;
+      if (trackingId === -1) continue; // Skip faces without tracking ID
+
+      // Get or create tracked face
+      let tracked = this._trackedFaces.get(trackingId);
+      if (!tracked) {
+        tracked = this._createTrackedFace(trackingId);
+        this._trackedFaces.set(trackingId, tracked);
+        console.log(`[SpeakerService] New face detected: ${tracked.speaker.label}`);
+      }
+
+      tracked.lastSeenMs = now;
+
+      // Compute mouth openness from landmarks
+      const landmarks = this._extractLandmarks(face);
+      const mouthOpenness = landmarks
+        ? this._computeMouthOpenness(landmarks.mouthTop, landmarks.mouthBottom)
+        : 0;
+
+      // Track mouth movement history for lip-sync
+      tracked.mouthOpennessHistory.push(mouthOpenness);
+      if (tracked.mouthOpennessHistory.length > 15) {
+        tracked.mouthOpennessHistory.shift(); // ~1 second window at 15fps
+      }
+
+      // Compute lip-sync correlation score
+      tracked.lipSyncScore = this._computeLipSyncScore(tracked);
+
+      // Determine if this face is currently speaking
+      const isSpeaking = tracked.lipSyncScore > 0.3 && this._isSpeechActive;
+
+      const detection: FaceDetection = {
+        bounds: {
+          x: face.bounds.x,
+          y: face.bounds.y,
+          width: face.bounds.width,
+          height: face.bounds.height,
+        },
+        landmarks,
+        isSpeaking,
+        embedding: null, // Phase 3: face embedding for re-identification
+      };
+
+      detections.push(detection);
+
+      // Emit speaker detection if this face is speaking
+      if (isSpeaking) {
+        for (const cb of this._callbacks) {
+          cb(tracked.speakerId, detection);
+        }
+      }
+    }
+
+    return detections;
   }
 
   /**
    * Feed audio amplitude for lip-sync correlation.
-   * Cross-references mouth movement timing with audio peaks
-   * to determine who is actually speaking.
+   * Cross-references mouth movement timing with audio peaks.
    */
   feedAudioAmplitude(rmsDb: number): void {
     this._audioAmplitudeHistory.push(rmsDb);
-    // Keep last 30 samples (~2 seconds at 15fps)
     if (this._audioAmplitudeHistory.length > 30) {
       this._audioAmplitudeHistory.shift();
     }
+    this._isSpeechActive = rmsDb > -40;
   }
 
   /**
-   * Register a known speaker for re-identification across frames.
+   * Get the most likely current speaker based on lip-sync scores.
    */
-  registerSpeaker(speaker: Speaker): void {
-    this._knownSpeakers.set(speaker.id, speaker);
-  }
+  getActiveSpeaker(): { speakerId: string; speaker: Speaker } | null {
+    if (!this._active || this._trackedFaces.size === 0) return null;
 
-  /**
-   * Rename a speaker (user taps on avatar to assign real name).
-   */
-  renameSpeaker(speakerId: string, newLabel: string): void {
-    const speaker = this._knownSpeakers.get(speakerId);
-    if (speaker) {
-      speaker.label = newLabel;
+    let bestScore = 0;
+    let bestFace: TrackedFace | null = null;
+
+    for (const tracked of this._trackedFaces.values()) {
+      if (tracked.lipSyncScore > bestScore && this._isSpeechActive) {
+        bestScore = tracked.lipSyncScore;
+        bestFace = tracked;
+      }
     }
+
+    if (!bestFace || bestScore < 0.3) return null;
+
+    return {
+      speakerId: bestFace.speakerId,
+      speaker: bestFace.speaker,
+    };
   }
 
-  /**
-   * Get all currently tracked speakers.
-   */
+  /** Get all tracked speakers. */
   getSpeakers(): Speaker[] {
-    return Array.from(this._knownSpeakers.values());
+    return Array.from(this._trackedFaces.values()).map(f => f.speaker);
+  }
+
+  /** Rename a speaker (user taps avatar). */
+  renameSpeaker(speakerId: string, newLabel: string): void {
+    for (const tracked of this._trackedFaces.values()) {
+      if (tracked.speakerId === speakerId) {
+        tracked.speaker.label = newLabel;
+        break;
+      }
+    }
   }
 
   onSpeakerDetected(cb: SpeakerDetectionCallback): () => void {
@@ -119,65 +214,106 @@ export class SpeakerService {
 
   // ── Private ─────────────────────────────────────────────────────────────
 
-  /**
-   * Compute cosine similarity between two face embeddings.
-   * Used to match detected faces to known speakers.
-   */
-  private _cosineSimilarity(a: number[], b: number[]): number {
-    if (a.length !== b.length) return 0;
-    let dot = 0, magA = 0, magB = 0;
-    for (let i = 0; i < a.length; i++) {
-      dot += a[i] * b[i];
-      magA += a[i] * a[i];
-      magB += b[i] * b[i];
-    }
-    return dot / (Math.sqrt(magA) * Math.sqrt(magB));
+  private _createTrackedFace(trackingId: number): TrackedFace {
+    const index = this._nextSpeakerId - 1;
+    const letter = String.fromCharCode(65 + (index % 26));
+    const speakerId = `speaker_${this._nextSpeakerId++}`;
+
+    return {
+      trackingId,
+      speakerId,
+      speaker: {
+        id: speakerId,
+        label: `Speaker ${letter}`,
+        color: SPEAKER_COLORS[index % SPEAKER_COLORS.length],
+        thumbnailUri: null,
+        embedding: null,
+      },
+      mouthOpennessHistory: [],
+      lipSyncScore: 0,
+      lastSeenMs: Date.now(),
+    };
   }
 
   /**
-   * Detect lip movement from mouth landmarks.
-   * Returns mouth openness ratio (0 = closed, 1 = wide open).
+   * Extract landmarks from MLKit face result into our normalized format.
+   */
+  private _extractLandmarks(face: MLKitFace): FaceLandmarks | null {
+    const lm = face.landmarks;
+    if (!lm) return null;
+
+    // MLKit provides landmarks as { x, y } in frame coordinates
+    // Normalize to 0-1 range using face bounds
+    const b = face.bounds;
+    const norm = (point: { x: number; y: number }) => ({
+      x: b.width > 0 ? (point.x - b.x) / b.width : 0,
+      y: b.height > 0 ? (point.y - b.y) / b.height : 0,
+    });
+
+    return {
+      leftEye: lm.LEFT_EYE ? norm(lm.LEFT_EYE) : { x: 0.3, y: 0.35 },
+      rightEye: lm.RIGHT_EYE ? norm(lm.RIGHT_EYE) : { x: 0.7, y: 0.35 },
+      nose: lm.NOSE_BASE ? norm(lm.NOSE_BASE) : { x: 0.5, y: 0.55 },
+      mouthTop: lm.MOUTH_TOP ? norm(lm.MOUTH_TOP) : { x: 0.5, y: 0.7 },
+      mouthBottom: lm.MOUTH_BOTTOM ? norm(lm.MOUTH_BOTTOM) : { x: 0.5, y: 0.8 },
+    };
+  }
+
+  /**
+   * Compute mouth openness from landmarks.
+   * Returns 0 (closed) to 1 (wide open).
    */
   private _computeMouthOpenness(
     mouthTop: { x: number; y: number },
     mouthBottom: { x: number; y: number },
   ): number {
     const dy = Math.abs(mouthBottom.y - mouthTop.y);
-    // Normalized by approximate face height (mouth is ~1/6 of face height)
     return Math.min(1, dy * 6);
   }
 
   /**
-   * Correlate mouth movement with audio amplitude.
-   * A face with changing mouth openness during high audio amplitude
-   * is likely the active speaker.
+   * Compute lip-sync correlation score.
+   * High mouth movement variance during audio activity = likely speaking.
    */
-  private _correlateLipSync(faceId: string, mouthOpenness: number): number {
-    const history = this._lastMouthOpenness.get(faceId) || [];
-    history.push(mouthOpenness);
-    if (history.length > 15) history.shift(); // ~1 second window
-    this._lastMouthOpenness.set(faceId, history);
-
+  private _computeLipSyncScore(tracked: TrackedFace): number {
+    const history = tracked.mouthOpennessHistory;
     if (history.length < 3) return 0;
 
-    // Compute mouth movement variance
+    // Compute variance of mouth openness
     const mean = history.reduce((a, b) => a + b, 0) / history.length;
     const variance = history.reduce((a, b) => a + (b - mean) ** 2, 0) / history.length;
 
-    // Compute audio activity
-    const recentAudio = this._audioAmplitudeHistory.slice(-15);
-    const audioActive = recentAudio.some(db => db > -40);
-
-    // High mouth variance + audio activity = likely speaking
-    return audioActive ? variance * 10 : 0;
+    // Scale: variance > 0.01 with audio = high confidence
+    return Math.min(1, variance * 50);
   }
 
-  private _generateSpeakerId(): string {
-    return `speaker_${this._nextSpeakerId++}`;
+  /**
+   * Remove faces not seen for > 3 seconds.
+   */
+  private _cleanupStaleFaces(): void {
+    const now = Date.now();
+    for (const [trackingId, tracked] of this._trackedFaces) {
+      if (now - tracked.lastSeenMs > 3000) {
+        console.log(`[SpeakerService] Face lost: ${tracked.speaker.label}`);
+        this._trackedFaces.delete(trackingId);
+      }
+    }
   }
 }
 
-// Singleton
+// ── MLKit Face Type (from react-native-vision-camera-face-detector) ─────────
+
+interface MLKitFace {
+  bounds: { x: number; y: number; width: number; height: number };
+  trackingId?: number;
+  smilingProbability?: number;
+  leftEyeOpenProbability?: number;
+  rightEyeOpenProbability?: number;
+  landmarks?: Record<string, { x: number; y: number }>;
+}
+
+// ── Singleton ───────────────────────────────────────────────────────────────
+
 let _instance: SpeakerService | null = null;
 
 export function getSpeakerService(): SpeakerService {

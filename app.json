@@ -2,7 +2,7 @@
   "expo": {
     "name": "CaptionCast",
     "slug": "captioncast",
-    "version": "0.1.0",
+    "version": "0.2.0",
     "orientation": "default",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "dark",
@@ -14,7 +14,7 @@
       "infoPlist": {
         "NSMicrophoneUsageDescription": "CaptionCast needs microphone access to transcribe live speech into captions.",
         "NSSpeechRecognitionUsageDescription": "CaptionCast uses on-device speech recognition for live captioning.",
-        "NSCameraUsageDescription": "CaptionCast uses the camera for visual speaker identification."
+        "NSCameraUsageDescription": "CaptionCast uses the camera for visual speaker identification via face detection."
       }
     },
     "android": {
@@ -35,6 +35,13 @@
         "expo-av",
         {
           "microphonePermission": "CaptionCast needs microphone access to transcribe live speech into captions."
+        }
+      ],
+      [
+        "react-native-vision-camera",
+        {
+          "cameraPermissionText": "CaptionCast uses the camera for visual speaker identification.",
+          "enableFrameProcessors": true
         }
       ]
     ]
