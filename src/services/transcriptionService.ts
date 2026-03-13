@@ -26,6 +26,7 @@ import {
   onSystemAudioResult,
   onSystemAudioEnd,
 } from './systemAudioCapture';
+import { getAudioDiarization } from './audioDiarization';
 
 export type AudioSourceMode = 'microphone' | 'system-audio' | 'url';
 
@@ -114,6 +115,7 @@ export class TranscriptionService {
     this._active = true;
     this._sourceMode = sourceMode;
     this._sessionStartMs = Date.now();
+    getAudioDiarization().reset();
 
     if (sourceMode === 'system-audio') {
       await this._startSystemAudioMode();
@@ -379,13 +381,16 @@ export class TranscriptionService {
     const estimatedDurationMs = wordCount * 150;
     const startMs = Math.max(0, endMs - estimatedDurationMs);
 
+    // Speaker diarization — detect speaker changes from timing/energy
+    const diarization = getAudioDiarization().analyze(cleanText, startMs, endMs, confidence >= 0 ? confidence : 0.9);
+
     const segment: TranscriptSegment = {
       id: nextId(),
       text: cleanText,
       source: 'speech',
       startMs,
       endMs,
-      speakerId: null,
+      speakerId: diarization.speakerId,
       isFinal: true,
       confidence: confidence >= 0 ? confidence : 0.9,
     };

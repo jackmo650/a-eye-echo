@@ -110,6 +110,14 @@ function AppContent() {
           }}
         />
         <Tabs.Screen
+          name="share"
+          options={{
+            title: 'Share',
+            tabBarLabel: 'Share',
+            tabBarAccessibilityLabel: 'Share captions with other devices',
+          }}
+        />
+        <Tabs.Screen
           name="settings"
           options={{
             title: 'Settings',

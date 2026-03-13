@@ -46,6 +46,7 @@ import { getSpeakerService } from '../src/services/speakerService';
 import { getSignLanguageService } from '../src/services/signLanguageService';
 // URL mode uses WebView + mic transcription, no separate ingest service needed
 import * as db from '../src/services/database';
+import { getCaptionNetworkService } from '../src/services/captionNetworkService';
 import type { TranscriptSegment } from '../src/types';
 
 type AudioSourceMode = 'microphone' | 'url' | 'system-audio';
@@ -154,6 +155,9 @@ export default function LiveScreen() {
       }
 
       addSegment(segment);
+
+      // Broadcast to caption network receivers (if hosting)
+      getCaptionNetworkService().broadcast(segment);
 
       // Auto-save segment to database
       if (settings.autoSaveSession) {
