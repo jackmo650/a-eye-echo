@@ -156,4 +156,6 @@ Contributions are welcome! This is an accessibility tool — improvements that h
 
 ## License
 
-[MIT](LICENSE)
+[MIT](LICENSE) — Copyright (c) 2026 Neem LLC
+
+Powered by [WallSpace.Studio](https://wallspace.studio)
