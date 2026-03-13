@@ -207,20 +207,7 @@ export const PRESET_THEMES: CaptionTheme[] = [
   },
 ];
 
-// ── Whisper Model Info ──────────────────────────────────────────────────────
-
-export const WHISPER_MODELS = {
-  'tiny.en':   { label: 'Tiny (English)',      size: '~75 MB',  speed: 'Fastest',  quality: 'Basic',     recommended: 'Older devices / long sessions' },
-  'tiny':      { label: 'Tiny (Multilingual)',  size: '~75 MB',  speed: 'Fastest',  quality: 'Basic',     recommended: 'Non-English, older devices' },
-  'base.en':   { label: 'Base (English)',       size: '~142 MB', speed: 'Fast',     quality: 'Good',      recommended: 'Most devices (default)' },
-  'base':      { label: 'Base (Multilingual)',  size: '~142 MB', speed: 'Fast',     quality: 'Good',      recommended: 'Non-English, most devices' },
-  'small.en':  { label: 'Small (English)',      size: '~466 MB', speed: 'Moderate', quality: 'Very good', recommended: 'Newer devices / short sessions' },
-  'small':     { label: 'Small (Multilingual)', size: '~466 MB', speed: 'Moderate', quality: 'Very good', recommended: 'Non-English, newer devices' },
-  'medium.en': { label: 'Medium (English)',     size: '~1.5 GB', speed: 'Slow',     quality: 'Excellent', recommended: 'Best accuracy, needs A15+ chip' },
-  'medium':    { label: 'Medium (Multilingual)',size: '~1.5 GB', speed: 'Slow',     quality: 'Excellent', recommended: 'Best non-English, A15+ chip' },
-} as const;
-
-// ── Whisper Languages ──────────────────────────────────────────────────────
+// ── Supported Languages ──────────────────────────────────────────────────────
 
 export interface LanguageInfo {
   code: WhisperLanguage;

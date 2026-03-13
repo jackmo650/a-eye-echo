@@ -31,7 +31,6 @@ import {
 } from 'react-native-gesture-handler';
 import { CaptionDisplay } from '../src/components/CaptionDisplay';
 import { CameraFaceDetector } from '../src/components/CameraFaceDetector';
-import { ModelDownloadModal } from '../src/components/ModelDownloadModal';
 import { UrlIngestPanel } from '../src/components/UrlIngestPanel';
 // SystemAudioPanel removed — system audio capture deferred to future release
 import { useTranscriptStore } from '../src/stores/useTranscriptStore';
@@ -42,6 +41,7 @@ import {
   type TranscriptionService,
 } from '../src/services/transcriptionService';
 import { getVibrationService } from '../src/services/vibrationService';
+import { getPowerManager, type PowerMode } from '../src/services/powerManager';
 import { getSpeakerService } from '../src/services/speakerService';
 import { getSignLanguageService } from '../src/services/signLanguageService';
 // URL mode uses WebView + mic transcription, no separate ingest service needed
@@ -69,11 +69,10 @@ export default function LiveScreen() {
   } = useTranscriptStore();
 
   const [audioLevel, setAudioLevel] = useState(-Infinity);
-  const [downloadProgress, setDownloadProgress] = useState(0);
-  const [isDownloading, setIsDownloading] = useState(false);
   const [sourceMode, setSourceMode] = useState<AudioSourceMode>('microphone');
   const [showRewind, setShowRewind] = useState(false);
   const [speechPace, setSpeechPace] = useState<'slow' | 'normal' | 'fast'>('normal');
+  const [powerMode, setPowerMode] = useState<PowerMode>('full');
   const lastPartialTimeRef = useRef(Date.now());
   const wordCountRef = useRef(0);
   // systemAudioActive state removed — system audio deferred
@@ -132,6 +131,10 @@ export default function LiveScreen() {
     // Set up vibration service
     const vibration = getVibrationService();
     vibration.configure(settings.vibration);
+
+    // Apply power manager recommendations
+    const pm = getPowerManager();
+    const powerRec = pm.getRecommendations();
 
     // Register transcript callback
     service.onTranscript((segment: TranscriptSegment) => {
@@ -217,7 +220,8 @@ export default function LiveScreen() {
 
     try {
       // Start transcription — mic mode or system audio mode
-      await service.start(undefined, sourceMode);
+      // In saver mode, skip amplitude capture to save battery
+      await service.start(undefined, sourceMode, !powerRec.enableAmplitude);
     } catch (err: any) {
       console.error('[LiveScreen] Start failed:', err);
       endSession();
@@ -266,9 +270,14 @@ export default function LiveScreen() {
   // URL mode: transcription handled by mic (same as microphone mode)
   // WebView plays the media, mic picks up the audio
 
-  // Cleanup on unmount
+  // Start power manager + cleanup on unmount
   useEffect(() => {
+    const pm = getPowerManager();
+    pm.start();
+    const unsub = pm.onModeChange(setPowerMode);
     return () => {
+      unsub();
+      pm.stop();
       serviceRef.current?.stop();
       speakerService.stop();
       getSignLanguageService().stop();
@@ -289,13 +298,6 @@ export default function LiveScreen() {
 
   return (
     <View style={styles.container}>
-      {/* Model download modal */}
-      <ModelDownloadModal
-        visible={isDownloading}
-        modelId={settings.transcription.modelSize}
-        progress={downloadProgress}
-      />
-
       {/* Camera face detector (small preview in corner) — only in mic mode */}
       {(settings.cameraEnabled || settings.signLanguage.enabled) && isActive && sourceMode === 'microphone' && (
         <CameraFaceDetector
@@ -417,9 +419,9 @@ export default function LiveScreen() {
         )}
 
         {/* Status indicator */}
-        {status === 'loading-model' && !isDownloading && (
+        {status === 'loading-model' && (
           <View style={styles.statusBanner}>
-            <Text style={styles.statusText}>Initializing Whisper...</Text>
+            <Text style={styles.statusText}>Initializing...</Text>
           </View>
         )}
 
@@ -531,11 +533,18 @@ export default function LiveScreen() {
           </TouchableOpacity>
         )}
 
-        {/* Segment count */}
+        {/* Segment count + power mode */}
         {isActive && (
-          <Text style={styles.segmentCount}>
-            {segments.length} segment{segments.length !== 1 ? 's' : ''}
-          </Text>
+          <View style={styles.statusRow}>
+            <Text style={styles.segmentCount}>
+              {segments.length} segment{segments.length !== 1 ? 's' : ''}
+            </Text>
+            {powerMode !== 'full' && (
+              <Text style={[styles.powerBadge, powerMode === 'saver' && styles.powerBadgeSaver]}>
+                {powerMode === 'saver' ? 'Battery Saver' : 'Balanced'}
+              </Text>
+            )}
+          </View>
         )}
       </View>
     </View>
@@ -785,9 +794,29 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     letterSpacing: 1,
   },
+  statusRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    width: '100%',
+  },
   segmentCount: {
     color: '#666',
     fontSize: 11,
+  },
+  powerBadge: {
+    color: '#FFB74D',
+    fontSize: 10,
+    fontWeight: '700',
+    backgroundColor: '#2A1F0A',
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 8,
+    overflow: 'hidden',
+  },
+  powerBadgeSaver: {
+    color: '#E53935',
+    backgroundColor: '#2A0A0A',
   },
   urlSection: {
     flex: 1,

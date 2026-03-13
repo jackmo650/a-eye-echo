@@ -16,14 +16,11 @@ import {
 import Slider from '@react-native-community/slider';
 import { useSettingsStore } from '../src/stores/useSettingsStore';
 import {
-  WHISPER_MODELS,
   WHISPER_LANGUAGES,
   TRANSLATION_LANGUAGES,
   PRESET_THEMES,
 } from '../src/types/defaults';
 import type {
-  WhisperModel,
-  WhisperLanguage,
   CaptionFont,
   VibrationIntensity,
   SignLanguageType,
@@ -67,15 +64,6 @@ export default function SettingsScreen() {
   const { caption, transcription, translation, signLanguage, vibration } = settings;
 
   const [languageSearch, setLanguageSearch] = useState('');
-
-  // Filter models: show English-only for English, multilingual otherwise
-  const isNonEnglish = transcription.language !== 'en';
-  const filteredModels = (Object.keys(WHISPER_MODELS) as WhisperModel[]).filter(id => {
-    if (isNonEnglish) {
-      return !id.endsWith('.en'); // Only show multilingual
-    }
-    return id.endsWith('.en'); // Only show English
-  });
 
   // Filter languages for search (exclude 'auto' — not supported by Apple Speech Recognition)
   const filteredLanguages = WHISPER_LANGUAGES.filter(l =>
@@ -367,45 +355,6 @@ export default function SettingsScreen() {
             </Text>
           </>
         )}
-      </Section>
-
-      {/* ── Transcription ── */}
-      <Section title="Transcription">
-        <Row label="Whisper Model">
-          <View style={styles.modelList}>
-            {filteredModels.map(modelId => {
-              const info = WHISPER_MODELS[modelId];
-              const isActive = transcription.modelSize === modelId;
-              return (
-                <TouchableOpacity
-                  key={modelId}
-                  style={[styles.modelCard, isActive && styles.modelCardActive]}
-                  onPress={() => updateTranscriptionConfig({ modelSize: modelId })}
-                >
-                  <Text style={[styles.modelName, isActive && styles.modelNameActive]}>
-                    {info.label}
-                  </Text>
-                  <Text style={styles.modelMeta}>{info.size} - {info.speed}</Text>
-                  <Text style={styles.modelMeta}>{info.recommended}</Text>
-                </TouchableOpacity>
-              );
-            })}
-          </View>
-        </Row>
-
-        <Row label={`Chunk Duration: ${transcription.chunkDurationSec}s`}>
-          <Slider
-            style={styles.slider}
-            minimumValue={3}
-            maximumValue={10}
-            step={1}
-            value={transcription.chunkDurationSec}
-            onValueChange={(v) => updateTranscriptionConfig({ chunkDurationSec: v })}
-            minimumTrackTintColor="#4FC3F7"
-            maximumTrackTintColor="#333"
-            thumbTintColor="#4FC3F7"
-          />
-        </Row>
       </Section>
 
       {/* ── Vibration ── */}
@@ -708,33 +657,6 @@ const styles = StyleSheet.create({
   apiKeyHint: {
     color: '#666',
     fontSize: 11,
-  },
-  modelList: {
-    gap: 8,
-  },
-  modelCard: {
-    backgroundColor: '#1A1A1A',
-    padding: 12,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: '#333',
-  },
-  modelCardActive: {
-    borderColor: '#4FC3F7',
-    backgroundColor: '#1A3A4A',
-  },
-  modelName: {
-    color: '#CCC',
-    fontSize: 15,
-    fontWeight: '600',
-    marginBottom: 2,
-  },
-  modelNameActive: {
-    color: '#4FC3F7',
-  },
-  modelMeta: {
-    color: '#666',
-    fontSize: 12,
   },
   footer: {
     alignItems: 'center',

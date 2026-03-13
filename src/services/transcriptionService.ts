@@ -109,7 +109,7 @@ export class TranscriptionService {
     this._translationConfig = { ...this._translationConfig, ...partial };
   }
 
-  async start(_onModelDownloadProgress?: (percent: number) => void, sourceMode: AudioSourceMode = 'microphone'): Promise<void> {
+  async start(_onModelDownloadProgress?: (percent: number) => void, sourceMode: AudioSourceMode = 'microphone', forceSkipAmplitude = false): Promise<void> {
     if (this._active) return;
     this._active = true;
     this._sourceMode = sourceMode;
@@ -120,8 +120,8 @@ export class TranscriptionService {
     } else {
       // 'microphone' and 'url' both use mic-based speech recognition
       // URL mode skips AudioCapture to avoid reconfiguring the audio session
-      // which would freeze the WebView
-      await this._startMicMode(sourceMode === 'url');
+      // which would freeze the WebView. Also skip in battery saver mode.
+      await this._startMicMode(sourceMode === 'url' || forceSkipAmplitude);
     }
   }
 
