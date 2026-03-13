@@ -1,13 +1,17 @@
 // ============================================================================
 // Transcript Screen — Scrolling transcript view for current session
 // Shows live transcript with timestamps, speaker labels, and status.
+// Toggle between Timeline view and Conversational (chat bubble) view.
 // ============================================================================
 
-import React from 'react';
-import { View, Text, StyleSheet } from 'react-native';
+import React, { useState } from 'react';
+import { View, Text, TouchableOpacity, StyleSheet } from 'react-native';
 import { TranscriptList } from '../src/components/TranscriptList';
+import { ConversationalView } from '../src/components/ConversationalView';
 import { useTranscriptStore } from '../src/stores/useTranscriptStore';
 import { useSettingsStore } from '../src/stores/useSettingsStore';
+
+type ViewMode = 'timeline' | 'chat';
 
 function formatDuration(ms: number): string {
   const minutes = Math.floor(ms / 60000);
@@ -18,6 +22,7 @@ function formatDuration(ms: number): string {
 export default function TranscriptScreen() {
   const { segments, speakers, status, currentSession } = useTranscriptStore();
   const { settings } = useSettingsStore();
+  const [viewMode, setViewMode] = useState<ViewMode>('timeline');
 
   const isActive = status === 'active' || status === 'loading-model';
   const lastSegment = segments.length > 0 ? segments[segments.length - 1] : null;
@@ -51,6 +56,26 @@ export default function TranscriptScreen() {
         </View>
       )}
 
+      {/* View mode toggle */}
+      <View style={styles.viewToggle}>
+        <TouchableOpacity
+          style={[styles.toggleBtn, viewMode === 'timeline' && styles.toggleBtnActive]}
+          onPress={() => setViewMode('timeline')}
+        >
+          <Text style={[styles.toggleText, viewMode === 'timeline' && styles.toggleTextActive]}>
+            Timeline
+          </Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={[styles.toggleBtn, viewMode === 'chat' && styles.toggleBtnActive]}
+          onPress={() => setViewMode('chat')}
+        >
+          <Text style={[styles.toggleText, viewMode === 'chat' && styles.toggleTextActive]}>
+            Chat
+          </Text>
+        </TouchableOpacity>
+      </View>
+
       {status === 'idle' && segments.length === 0 ? (
         <View style={styles.emptyState}>
           <Text style={styles.emptyTitle}>No Active Session</Text>
@@ -62,6 +87,14 @@ export default function TranscriptScreen() {
             Pull up to pause auto-scroll.
           </Text>
         </View>
+      ) : viewMode === 'chat' ? (
+        <ConversationalView
+          segments={segments}
+          speakers={speakers}
+          onSegmentPress={(segment) => {
+            console.log(`Tapped segment at ${segment.startMs}ms: ${segment.text}`);
+          }}
+        />
       ) : (
         <TranscriptList
           segments={segments}
@@ -120,6 +153,33 @@ const styles = StyleSheet.create({
     color: '#4FC3F7',
     fontSize: 10,
     fontWeight: '700',
+  },
+  viewToggle: {
+    flexDirection: 'row',
+    marginHorizontal: 16,
+    marginTop: 8,
+    marginBottom: 4,
+    gap: 6,
+  },
+  toggleBtn: {
+    paddingHorizontal: 14,
+    paddingVertical: 6,
+    borderRadius: 14,
+    backgroundColor: '#1A1A1A',
+    borderWidth: 1,
+    borderColor: '#333',
+  },
+  toggleBtnActive: {
+    backgroundColor: '#1A3040',
+    borderColor: '#4FC3F7',
+  },
+  toggleText: {
+    color: '#888',
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  toggleTextActive: {
+    color: '#4FC3F7',
   },
   emptyState: {
     flex: 1,
