@@ -2,6 +2,11 @@
   "name": "a-eye-echo",
   "version": "0.3.0",
   "description": "A.EYE.ECHO — Portable live captioning for deaf and hard-of-hearing users",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/jackmo650/a-eye-echo.git"
+  },
   "main": "expo-router/entry",
   "scripts": {
     "start": "expo start",
@@ -52,5 +57,12 @@
     "jest": "^29.0.0",
     "typescript": "~5.7.0"
   },
-  "private": true
+  "expo": {
+    "doctor": {
+      "reactNativeDirectoryCheck": {
+        "listUnknownPackages": false,
+        "exclude": ["expo-av"]
+      }
+    }
+  }
 }

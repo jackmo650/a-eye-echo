@@ -15,3 +15,8 @@ android/
 
 # API secrets
 src/config/secrets.ts
+
+# Build artifacts and caches
+__pycache__/
+*.backup
+scripts/asl_saved_model/
