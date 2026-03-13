@@ -6,7 +6,17 @@
 // Includes LRU cache to avoid re-translating repeated phrases.
 // ============================================================================
 
-import { DEEPL_API_KEY } from '../config/secrets';
+// Try local secrets first, fall back to defaults for CI/EAS builds
+let DEEPL_API_KEY = '';
+try {
+  DEEPL_API_KEY = require('../config/secrets').DEEPL_API_KEY || '';
+} catch {
+  try {
+    DEEPL_API_KEY = require('../config/secrets.default').DEEPL_API_KEY || '';
+  } catch {
+    // No secrets available — translation will use LibreTranslate fallback
+  }
+}
 
 // ── LRU Translation Cache ───────────────────────────────────────────────────
 
