@@ -71,6 +71,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   cameraPosition: 'front',
   keepScreenAwake: true,
   autoSaveSession: true,
+  anchorCaptionsToFace: false,
 };
 
 // ── Built-in Themes ─────────────────────────────────────────────────────────

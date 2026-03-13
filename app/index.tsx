@@ -97,6 +97,11 @@ export default function LiveScreen() {
   // Get the latest segment for translation display
   const latestSegment = segments.length > 0 ? segments[segments.length - 1] : null;
 
+  // Face-anchored caption position
+  const faceBounds = settings.cameraEnabled && settings.anchorCaptionsToFace
+    ? speakerService.getActiveSpeakerBounds()
+    : null;
+
   // Pinch-to-zoom font size
   const { setFontSize } = useSettingsStore();
   const baseFontSizeRef = useRef(settings.caption.fontSize);
@@ -383,7 +388,16 @@ export default function LiveScreen() {
       <View style={styles.captionArea}>
         {/* Live caption text */}
         {isActive && currentText.trim() !== '' && (
-          <View style={styles.liveCaptionContainer}>
+          <View style={[
+            styles.liveCaptionContainer,
+            faceBounds && {
+              position: 'absolute',
+              top: faceBounds.y * height + faceBounds.height * height + 8,
+              left: Math.max(8, faceBounds.x * width - 40),
+              right: undefined,
+              maxWidth: width * 0.8,
+            },
+          ]}>
             {currentSpeaker && (
               <Text style={[styles.liveSpeakerLabel, currentSpeaker.color ? { color: currentSpeaker.color } : null]}>
                 {currentSpeaker.label}

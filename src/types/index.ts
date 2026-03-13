@@ -267,4 +267,6 @@ export interface AppSettings {
   keepScreenAwake: boolean;
   /** Auto-save sessions */
   autoSaveSession: boolean;
+  /** Anchor captions near speaker's face when camera is active */
+  anchorCaptionsToFace: boolean;
 }

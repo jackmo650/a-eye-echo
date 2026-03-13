@@ -48,6 +48,7 @@ interface SettingsState {
 
   // ── General ──
   setKeepScreenAwake: (awake: boolean) => void;
+  setAnchorCaptionsToFace: (enabled: boolean) => void;
 
   // ── Persistence ──
   loadSettings: (settings: Partial<AppSettings>) => void;
@@ -132,6 +133,10 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
 
   setKeepScreenAwake: (awake) => set(state => ({
     settings: { ...state.settings, keepScreenAwake: awake },
+  })),
+
+  setAnchorCaptionsToFace: (enabled) => set(state => ({
+    settings: { ...state.settings, anchorCaptionsToFace: enabled },
   })),
 
   loadSettings: (loaded) => set(state => ({

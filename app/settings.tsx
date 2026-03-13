@@ -59,6 +59,7 @@ export default function SettingsScreen() {
     setCameraEnabled,
     setCameraPosition,
     setKeepScreenAwake,
+    setAnchorCaptionsToFace,
   } = useSettingsStore();
 
   const { caption, transcription, translation, signLanguage, vibration } = settings;
@@ -452,29 +453,43 @@ export default function SettingsScreen() {
         </Row>
 
         {settings.cameraEnabled && (
-          <Row label="Camera">
-            <View style={styles.segmentedControl}>
-              {(['front', 'back'] as const).map(pos => (
-                <TouchableOpacity
-                  key={pos}
-                  style={[
-                    styles.segmentButton,
-                    settings.cameraPosition === pos && styles.segmentButtonActive,
-                  ]}
-                  onPress={() => setCameraPosition(pos)}
-                >
-                  <Text
+          <>
+            <Row label="Camera">
+              <View style={styles.segmentedControl}>
+                {(['front', 'back'] as const).map(pos => (
+                  <TouchableOpacity
+                    key={pos}
                     style={[
-                      styles.segmentText,
-                      settings.cameraPosition === pos && styles.segmentTextActive,
+                      styles.segmentButton,
+                      settings.cameraPosition === pos && styles.segmentButtonActive,
                     ]}
+                    onPress={() => setCameraPosition(pos)}
                   >
-                    {pos === 'front' ? 'Front (1:1)' : 'Back (Conference)'}
-                  </Text>
-                </TouchableOpacity>
-              ))}
-            </View>
-          </Row>
+                    <Text
+                      style={[
+                        styles.segmentText,
+                        settings.cameraPosition === pos && styles.segmentTextActive,
+                      ]}
+                    >
+                      {pos === 'front' ? 'Front (1:1)' : 'Back (Conference)'}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            </Row>
+
+            <Row label="Anchor captions near face">
+              <Switch
+                value={settings.anchorCaptionsToFace}
+                onValueChange={setAnchorCaptionsToFace}
+                trackColor={{ true: '#4FC3F7', false: '#333' }}
+              />
+            </Row>
+            <Text style={styles.infoText}>
+              Positions captions near the detected speaker's face instead of center screen.
+              Requires camera to be active during transcription.
+            </Text>
+          </>
         )}
       </Section>
 

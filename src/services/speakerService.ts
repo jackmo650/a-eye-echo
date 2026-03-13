@@ -51,6 +51,7 @@ export class SpeakerService {
   // Audio amplitude for lip-sync correlation
   private _audioAmplitudeHistory: number[] = [];
   private _isSpeechActive = false;
+  private _lastFaceBounds: Map<number, { x: number; y: number; width: number; height: number }> = new Map();
 
   // Stale face cleanup interval
   private _cleanupTimer: ReturnType<typeof setInterval> | null = null;
@@ -112,6 +113,14 @@ export class SpeakerService {
       }
 
       tracked.lastSeenMs = now;
+
+      // Store face bounds for subtitle anchoring
+      this._lastFaceBounds.set(trackingId, {
+        x: face.bounds.x,
+        y: face.bounds.y,
+        width: face.bounds.width,
+        height: face.bounds.height,
+      });
 
       // Compute mouth openness from landmarks
       const landmarks = this._extractLandmarks(face);
@@ -190,6 +199,23 @@ export class SpeakerService {
       speakerId: bestFace.speakerId,
       speaker: bestFace.speaker,
     };
+  }
+
+  /**
+   * Get face bounding box of the active speaker (normalized 0-1).
+   * Used for subtitle anchoring near the speaker's face.
+   */
+  getActiveSpeakerBounds(): { x: number; y: number; width: number; height: number } | null {
+    const active = this.getActiveSpeaker();
+    if (!active) return null;
+
+    for (const tracked of this._trackedFaces.values()) {
+      if (tracked.speakerId === active.speakerId) {
+        // Return the last known face bounds
+        return this._lastFaceBounds.get(tracked.trackingId) ?? null;
+      }
+    }
+    return null;
   }
 
   /** Get all tracked speakers. */
