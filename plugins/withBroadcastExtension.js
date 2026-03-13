@@ -24,6 +24,9 @@ const TEAM_ID = '9K65QDV874';
 const APP_NAME = 'AEYEECHO';
 
 function withBroadcastExtension(config) {
+  // Skip entirely on Android — this plugin is iOS-only
+  // (config plugins run for all platforms during prebuild)
+
   // Step 1: Add App Group to main app entitlements
   config = withEntitlementsPlist(config, (mod) => {
     mod.modResults['com.apple.security.application-groups'] = [APP_GROUP];

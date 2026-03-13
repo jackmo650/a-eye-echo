@@ -49,8 +49,7 @@
         }
       ],
       "expo-speech-recognition",
-      "react-native-vision-camera",
-      "./plugins/withBroadcastExtension"
+      "react-native-vision-camera"
     ],
     "extra": {
       "router": {
