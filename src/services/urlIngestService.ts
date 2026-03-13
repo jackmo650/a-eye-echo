@@ -8,22 +8,18 @@
 //   4. YouTube URLs (via react-native-ytdl resolution)
 //
 // Pipeline:
-//   URL → resolve (if YouTube) → download to temp file → FFmpeg extract
-//   16kHz mono WAV → chunk into segments → feed to transcription service
+//   URL → resolve (if YouTube) → download to temp file
+//     → expo-speech-recognition (SFSpeechURLRecognitionRequest) → segments
 //
-// Uses:
-//   - expo-file-system for downloads
-//   - react-native-audio-api for audio decoding + resampling (if available)
-//   - Fallback: whisper.rn can transcribe WAV/audio files directly
-//
-// Ported from WallSpace.Studio WebRTC import service audio extraction pattern.
+// Uses the same speech recognition engine as live mic mode — no Whisper needed.
 // ============================================================================
 
 import * as FileSystem from 'expo-file-system';
+import { ExpoSpeechRecognitionModule } from 'expo-speech-recognition';
 import type { TranscriptSegment, WhisperLanguage } from '../types';
-import * as WhisperEngine from './whisperEngine';
 import { filterHallucinations } from './transcriptionService';
 import { getTranslationService } from './translationService';
+import { SpeechRecognitionEngine } from './speechRecognitionEngine';
 
 type TranscriptCallback = (segment: TranscriptSegment) => void;
 type ProgressCallback = (progress: IngestProgress) => void;
@@ -161,28 +157,12 @@ export class UrlIngestService {
 
       if (!this._active) return;
 
-      // Step 3: Ensure Whisper model is loaded
-      this._setStatus('extracting');
-
-      // Determine model for language
-      const language = this._config.language;
-      const modelId = WhisperEngine.getModelForLanguage('base', language);
-
-      const isDownloaded = await WhisperEngine.isModelDownloaded(modelId);
-      if (!isDownloaded) {
-        await WhisperEngine.downloadModel(modelId, (progress) => {
-          onModelDownloadProgress?.(progress.percent);
-        });
-      }
-      await WhisperEngine.loadModel(modelId);
-
-      if (!this._active) return;
-
-      // Step 4: Transcribe the audio file
-      // whisper.rn can handle audio/video files directly — it extracts
-      // the audio track internally using the native decoder.
+      // Step 3: Transcribe using expo-speech-recognition's audioSource
+      // Uses SFSpeechURLRecognitionRequest — same engine as live mic mode
+      // No Whisper model download needed
       this._setStatus('transcribing');
 
+      const language = this._config.language;
       await this._transcribeFile(localPath, language);
 
       this._setStatus('complete');
@@ -206,7 +186,9 @@ export class UrlIngestService {
   /** Cancel the current ingest operation. */
   cancel(): void {
     this._active = false;
-    WhisperEngine.abortTranscription();
+    try {
+      ExpoSpeechRecognitionModule.abort();
+    } catch { /* may not be recognizing */ }
     this._setStatus('idle');
     this._cleanupTempFiles();
   }
@@ -217,35 +199,91 @@ export class UrlIngestService {
    * Resolve a YouTube URL to a direct audio stream URL.
    * Uses react-native-ytdl for URL extraction.
    */
-  private async _resolveYouTubeUrl(youtubeUrl: string): Promise<string> {
-    try {
-      // Dynamic import to avoid crash if not installed
-      // @ts-expect-error — optional dependency
-      const ytdl = await import('react-native-ytdl');
+  /**
+   * Extract video ID from YouTube URL variants:
+   *   youtube.com/watch?v=ID, youtu.be/ID, youtube.com/live/ID, youtube.com/shorts/ID
+   */
+  private _extractYouTubeId(url: string): string | null {
+    const patterns = [
+      /[?&]v=([a-zA-Z0-9_-]{11})/,
+      /youtu\.be\/([a-zA-Z0-9_-]{11})/,
+      /youtube\.com\/live\/([a-zA-Z0-9_-]{11})/,
+      /youtube\.com\/shorts\/([a-zA-Z0-9_-]{11})/,
+    ];
+    for (const p of patterns) {
+      const m = url.match(p);
+      if (m) return m[1];
+    }
+    return null;
+  }
 
+  /**
+   * Resolve a YouTube URL to a direct audio stream URL.
+   * Uses Piped API (privacy-respecting YouTube frontend) for reliable extraction.
+   * Falls back to react-native-ytdl if Piped fails.
+   */
+  private async _resolveYouTubeUrl(youtubeUrl: string): Promise<string> {
+    const videoId = this._extractYouTubeId(youtubeUrl);
+    if (!videoId) {
+      throw new Error('Could not extract video ID from YouTube URL');
+    }
+
+    // Try multiple Piped API instances for reliability
+    const pipedInstances = [
+      'https://pipedapi.kavin.rocks',
+      'https://pipedapi.adminforge.de',
+      'https://api.piped.yt',
+    ];
+
+    for (const instance of pipedInstances) {
+      try {
+        console.log(`[UrlIngest] Trying Piped instance: ${instance}`);
+        const response = await fetch(`${instance}/streams/${videoId}`);
+        if (!response.ok) continue;
+
+        const data = await response.json();
+        const audioStreams = data.audioStreams;
+
+        if (!audioStreams || audioStreams.length === 0) continue;
+
+        // Pick highest bitrate audio stream
+        const best = audioStreams.sort(
+          (a: { bitrate?: number }, b: { bitrate?: number }) =>
+            (b.bitrate || 0) - (a.bitrate || 0),
+        )[0];
+
+        if (best.url) {
+          console.log(`[UrlIngest] YouTube audio via Piped: ${best.mimeType}, ${best.bitrate}bps`);
+          return best.url;
+        }
+      } catch (err) {
+        console.warn(`[UrlIngest] Piped instance ${instance} failed:`, err);
+        continue;
+      }
+    }
+
+    // Fallback to react-native-ytdl
+    try {
+      const ytdl = require('react-native-ytdl');
       const info = await ytdl.getInfo(youtubeUrl);
       const audioFormats = ytdl.filterFormats(info.formats, 'audioonly');
 
-      if (audioFormats.length === 0) {
-        throw new Error('No audio streams found for this YouTube video');
+      if (audioFormats.length > 0) {
+        const best = audioFormats.sort(
+          (a: { audioBitrate?: number }, b: { audioBitrate?: number }) =>
+            (b.audioBitrate || 0) - (a.audioBitrate || 0),
+        )[0];
+        console.log(`[UrlIngest] YouTube audio via ytdl: ${best.mimeType}, ${best.audioBitrate}kbps`);
+        return best.url;
       }
-
-      // Pick highest quality audio
-      const best = audioFormats.sort(
-        (a: { audioBitrate?: number }, b: { audioBitrate?: number }) =>
-          (b.audioBitrate || 0) - (a.audioBitrate || 0),
-      )[0];
-
-      console.log(`[UrlIngest] YouTube audio: ${best.mimeType}, ${best.audioBitrate}kbps`);
-      return best.url;
-
     } catch (err) {
-      console.error('[UrlIngest] YouTube resolution failed:', err);
-      throw new Error(
-        'Could not extract audio from YouTube URL. ' +
-        'Try downloading the video first and providing a direct file URL.',
-      );
+      console.warn('[UrlIngest] ytdl fallback also failed:', err);
     }
+
+    throw new Error(
+      'Could not extract audio from YouTube URL. ' +
+      'YouTube may be blocking extraction. Try downloading the video first.',
+    );
   }
 
   // ── Download ────────────────────────────────────────────────────────────
@@ -257,9 +295,14 @@ export class UrlIngestService {
       await FileSystem.makeDirectoryAsync(tempDir, { intermediates: true });
     }
 
-    // Determine extension from URL
-    const urlPath = new URL(url).pathname;
-    const ext = urlPath.match(/\.\w+$/)?.[0] || '.mp4';
+    // Determine extension from URL (safe parse)
+    let ext = '.mp4';
+    try {
+      const urlPath = new URL(url).pathname;
+      ext = urlPath.match(/\.\w+$/)?.[0] || '.mp4';
+    } catch {
+      // Malformed URL — use default extension
+    }
     const filename = `ingest_${Date.now()}${ext}`;
     const localPath = `${tempDir}${filename}`;
 
@@ -295,39 +338,50 @@ export class UrlIngestService {
   // ── Transcription ───────────────────────────────────────────────────────
 
   /**
-   * Transcribe a local audio/video file using Whisper.
+   * Transcribe a local audio/video file using expo-speech-recognition.
    *
-   * whisper.rn's transcribe function handles audio extraction from video
-   * containers natively. For long files, we get word-level timestamps
-   * from the segments array and emit them as TranscriptSegments.
+   * Uses SFSpeechURLRecognitionRequest via the `audioSource` option —
+   * same Apple speech engine as live mic mode, but fed from a file.
+   * No Whisper model needed, no JSI crash risk.
    */
   private async _transcribeFile(
     filePath: string,
     language: WhisperLanguage,
   ): Promise<void> {
-    console.log(`[UrlIngest] Transcribing file: ${filePath}, language: ${language}`);
+    console.log(`[UrlIngest] Transcribing file via speech recognition: ${filePath}, language: ${language}`);
 
-    const result = await WhisperEngine.transcribeFile(filePath, language);
+    const locale = SpeechRecognitionEngine.mapLanguage(language);
+    let segmentCount = 0;
 
-    if (!result.text.trim()) {
-      console.log('[UrlIngest] No speech detected in file');
-      return;
-    }
+    return new Promise<void>((resolve, reject) => {
+      // Track accumulated text for final segment emission
+      let lastText = '';
 
-    // If Whisper returned segments with timestamps, emit each as a TranscriptSegment
-    if (result.segments && result.segments.length > 0) {
-      const totalSegments = result.segments.length;
+      const resultSub = ExpoSpeechRecognitionModule.addListener('result', async (event: any) => {
+        if (!this._active) return;
 
-      for (let i = 0; i < totalSegments; i++) {
-        if (!this._active) break;
+        const transcript = event.results?.[0]?.transcript || '';
+        const isFinal = event.isFinal ?? false;
 
-        const seg = result.segments[i];
-        const cleanText = filterHallucinations(seg.text);
-        if (!cleanText) continue;
+        if (!transcript.trim()) return;
+
+        if (!isFinal) {
+          // Show partial progress
+          this._emitProgress({
+            downloadPercent: 100,
+            transcribePercent: 50, // Indeterminate during streaming
+            currentChunkSec: 0,
+            totalDurationSec: null,
+          });
+          lastText = transcript;
+          return;
+        }
+
+        // Final result — emit as segment
+        const cleanText = filterHallucinations(transcript);
+        if (!cleanText) return;
 
         let translatedText: string | undefined;
-
-        // Translate if enabled
         if (this._config.translationEnabled && this._config.translationTarget) {
           try {
             const sourceLang = (language === 'auto' ? 'en' : language) as string;
@@ -342,46 +396,99 @@ export class UrlIngestService {
           } catch { /* translation failure is non-blocking */ }
         }
 
+        segmentCount++;
         const segment: TranscriptSegment = {
           id: `url_${_nextSegId++}`,
           text: cleanText,
           translatedText,
           detectedLanguage: language === 'auto' ? undefined : language,
           source: 'speech',
-          startMs: seg.t0,
-          endMs: seg.t1,
+          startMs: 0,
+          endMs: 0,
           speakerId: null,
           isFinal: true,
-          confidence: 1.0,
+          confidence: event.results?.[0]?.confidence ?? 0.9,
         };
 
         for (const cb of this._transcriptCallbacks) cb(segment);
 
         this._emitProgress({
           downloadPercent: 100,
-          transcribePercent: ((i + 1) / totalSegments) * 100,
-          currentChunkSec: seg.t1 / 1000,
-          totalDurationSec: result.segments[totalSegments - 1].t1 / 1000,
+          transcribePercent: 90,
+          currentChunkSec: 0,
+          totalDurationSec: null,
         });
-      }
-    } else {
-      // Single chunk result — emit as one segment
-      const cleanText = filterHallucinations(result.text);
-      if (cleanText) {
-        const segment: TranscriptSegment = {
-          id: `url_${_nextSegId++}`,
-          text: cleanText,
-          source: 'speech',
-          startMs: 0,
-          endMs: 0,
-          speakerId: null,
-          isFinal: true,
-          confidence: 1.0,
-        };
+      });
 
-        for (const cb of this._transcriptCallbacks) cb(segment);
-      }
-    }
+      const errorSub = ExpoSpeechRecognitionModule.addListener('error', (event: any) => {
+        const errorCode = event.error || 'unknown';
+        const message = event.message || '';
+        console.error(`[UrlIngest] Speech recognition error: ${errorCode} — ${message}`);
+
+        // 'no-speech' is not fatal — file may have silent sections
+        if (errorCode === 'no-speech') return;
+
+        cleanup();
+        reject(new Error(`Speech recognition error: ${errorCode} — ${message}`));
+      });
+
+      const endSub = ExpoSpeechRecognitionModule.addListener('end', () => {
+        console.log(`[UrlIngest] Speech recognition ended, ${segmentCount} segments emitted`);
+
+        // If we had partial text that never became final, emit it
+        if (lastText.trim() && segmentCount === 0) {
+          const cleanText = filterHallucinations(lastText);
+          if (cleanText) {
+            const segment: TranscriptSegment = {
+              id: `url_${_nextSegId++}`,
+              text: cleanText,
+              source: 'speech',
+              startMs: 0,
+              endMs: 0,
+              speakerId: null,
+              isFinal: true,
+              confidence: 0.8,
+            };
+            for (const cb of this._transcriptCallbacks) cb(segment);
+          }
+        }
+
+        cleanup();
+        resolve();
+      });
+
+      const cleanup = () => {
+        resultSub.remove();
+        errorSub.remove();
+        endSub.remove();
+      };
+
+      // Ensure any previous recognition session is stopped
+      try {
+        ExpoSpeechRecognitionModule.abort();
+      } catch { /* may not be recognizing */ }
+
+      // Small delay to let previous session fully tear down
+      setTimeout(() => {
+        try {
+          // filePath from expo-file-system is already a file:// URI
+          console.log(`[UrlIngest] Starting speech recognition on: ${filePath}`);
+          ExpoSpeechRecognitionModule.start({
+            lang: locale,
+            interimResults: true,
+            continuous: true,
+            requiresOnDeviceRecognition: SpeechRecognitionEngine.supportsOnDevice(),
+            addsPunctuation: true,
+            audioSource: {
+              uri: filePath,
+            },
+          });
+        } catch (err) {
+          cleanup();
+          reject(err);
+        }
+      }, 300);
+    });
   }
 
   // ── Helpers ─────────────────────────────────────────────────────────────

@@ -33,7 +33,7 @@ import { CaptionDisplay } from '../src/components/CaptionDisplay';
 import { CameraFaceDetector } from '../src/components/CameraFaceDetector';
 import { ModelDownloadModal } from '../src/components/ModelDownloadModal';
 import { UrlIngestPanel } from '../src/components/UrlIngestPanel';
-import { SystemAudioPanel } from '../src/components/SystemAudioPanel';
+// SystemAudioPanel removed — system audio capture deferred to future release
 import { useTranscriptStore } from '../src/stores/useTranscriptStore';
 import { useSettingsStore } from '../src/stores/useSettingsStore';
 import { runOnJS } from 'react-native-reanimated';
@@ -44,7 +44,7 @@ import {
 import { getVibrationService } from '../src/services/vibrationService';
 import { getSpeakerService } from '../src/services/speakerService';
 import { getSignLanguageService } from '../src/services/signLanguageService';
-import { getUrlIngestService } from '../src/services/urlIngestService';
+// URL mode uses WebView + mic transcription, no separate ingest service needed
 import * as db from '../src/services/database';
 import type { TranscriptSegment } from '../src/types';
 
@@ -72,7 +72,7 @@ export default function LiveScreen() {
   const [downloadProgress, setDownloadProgress] = useState(0);
   const [isDownloading, setIsDownloading] = useState(false);
   const [sourceMode, setSourceMode] = useState<AudioSourceMode>('microphone');
-  const [systemAudioActive, setSystemAudioActive] = useState(false);
+  // systemAudioActive state removed — system audio deferred
 
   const serviceRef = useRef<TranscriptionService | null>(null);
 
@@ -111,11 +111,8 @@ export default function LiveScreen() {
     const service = getTranscriptionService();
     serviceRef.current = service;
 
-    // Configure from settings, overriding source based on selected mode
-    const sourceOverride = sourceMode === 'system-audio'
-      ? { type: 'system-audio' as const }
-      : settings.transcription.source;
-    service.configure({ ...settings.transcription, source: sourceOverride });
+    // Configure from settings
+    service.configure({ ...settings.transcription });
     service.configureTranslation(settings.translation);
 
     // Start session
@@ -124,7 +121,7 @@ export default function LiveScreen() {
       id: sessionId,
       title: new Date().toLocaleString(),
       startedAt: new Date().toISOString(),
-      audioSource: sourceOverride,
+      audioSource: settings.transcription.source,
       modelUsed: settings.transcription.modelSize,
     });
 
@@ -194,8 +191,8 @@ export default function LiveScreen() {
     }
 
     try {
-      // Start transcription — uses native speech recognition (no model download)
-      await service.start();
+      // Start transcription — mic mode or system audio mode
+      await service.start(undefined, sourceMode);
     } catch (err: any) {
       console.error('[LiveScreen] Start failed:', err);
       endSession();
@@ -239,16 +236,8 @@ export default function LiveScreen() {
     endSession();
   }, [endSession, settings.autoSaveSession, speakerService]);
 
-  // Wire URL ingest service transcript output into the store
-  useEffect(() => {
-    if (sourceMode !== 'url') return;
-
-    const ingestService = getUrlIngestService();
-    const unsub = ingestService.onTranscript((segment: TranscriptSegment) => {
-      addSegment(segment);
-    });
-    return unsub;
-  }, [sourceMode, addSegment]);
+  // URL mode: transcription handled by mic (same as microphone mode)
+  // WebView plays the media, mic picks up the audio
 
   // Cleanup on unmount
   useEffect(() => {
@@ -271,8 +260,8 @@ export default function LiveScreen() {
         progress={downloadProgress}
       />
 
-      {/* Camera face detector (small preview in corner) */}
-      {(settings.cameraEnabled || settings.signLanguage.enabled) && isActive && (
+      {/* Camera face detector (small preview in corner) — only in mic mode */}
+      {(settings.cameraEnabled || settings.signLanguage.enabled) && isActive && sourceMode === 'microphone' && (
         <CameraFaceDetector
           cameraPosition={settings.cameraPosition}
           isActive={isActive}
@@ -281,7 +270,55 @@ export default function LiveScreen() {
         />
       )}
 
-      {/* Caption display area — pinch to zoom */}
+      {/* URL Player — single instance, persists across idle/active to keep WebView state */}
+      {sourceMode === 'url' && (
+        <View style={styles.urlSection}>
+          {/* Compact source switcher */}
+          {!isActive && (
+            <View style={styles.urlSourceRow}>
+              <TouchableOpacity
+                style={styles.sourceChip}
+                onPress={() => setSourceMode('microphone')}
+              >
+                <Text style={styles.sourceChipText}>Microphone</Text>
+              </TouchableOpacity>
+              <View style={[styles.sourceChip, styles.sourceChipActive]}>
+                <Text style={[styles.sourceChipText, styles.sourceChipTextActive]}>URL / Video</Text>
+              </View>
+            </View>
+          )}
+          <UrlIngestPanel
+            language={settings.transcription.language}
+            translationEnabled={settings.translation.enabled}
+            translationTarget={settings.translation.targetLanguage}
+            onTranscriptReady={() => {}}
+          />
+          {/* Live captions below video when active */}
+          {isActive && currentText.trim() !== '' && (
+            <View style={styles.urlCaptionBar}>
+              <Text style={styles.urlCaptionText} numberOfLines={3}>
+                {currentText}
+              </Text>
+            </View>
+          )}
+          {isActive && segments.length > 0 && (
+            <ScrollView style={styles.urlTranscriptScroll} showsVerticalScrollIndicator={false}>
+              {segments.slice(-8).map((seg) => (
+                <Text key={seg.id} style={styles.urlTranscriptLine}>
+                  <Text style={styles.urlTranscriptTime}>
+                    {Math.floor((seg.startMs || 0) / 60000).toString().padStart(2, '0')}:
+                    {Math.floor(((seg.startMs || 0) % 60000) / 1000).toString().padStart(2, '0')}
+                  </Text>
+                  {'  '}{seg.translatedText || seg.text}
+                </Text>
+              ))}
+            </ScrollView>
+          )}
+        </View>
+      )}
+
+      {/* Caption display area — pinch to zoom (hidden in URL mode) */}
+      {sourceMode !== 'url' && (
       <GestureDetector gesture={pinchGesture}>
       <View style={styles.captionArea}>
         {/* Live caption text */}
@@ -328,7 +365,7 @@ export default function LiveScreen() {
           </View>
         )}
 
-        {status === 'idle' && !isActive && (
+        {status === 'idle' && !isActive && sourceMode !== 'url' && (
           <ScrollView
             style={styles.idleScroll}
             contentContainerStyle={styles.idleScrollContent}
@@ -337,8 +374,6 @@ export default function LiveScreen() {
             <Text style={styles.idleTitle}>A.EYE.ECHO</Text>
             <Text style={styles.idleSubtitle}>
               {sourceMode === 'microphone' && 'Tap Start to begin live captioning'}
-              {sourceMode === 'url' && 'Paste a URL to transcribe video or audio'}
-              {sourceMode === 'system-audio' && 'Capture audio from other apps'}
             </Text>
 
             {/* Source selector chips */}
@@ -359,40 +394,7 @@ export default function LiveScreen() {
                   URL / Video
                 </Text>
               </TouchableOpacity>
-              <TouchableOpacity
-                style={[styles.sourceChip, sourceMode === 'system-audio' && styles.sourceChipActive]}
-                onPress={() => setSourceMode('system-audio')}
-              >
-                <Text style={[styles.sourceChipText, sourceMode === 'system-audio' && styles.sourceChipTextActive]}>
-                  App Audio
-                </Text>
-              </TouchableOpacity>
             </View>
-
-            {/* URL Ingest Panel */}
-            {sourceMode === 'url' && (
-              <UrlIngestPanel
-                language={settings.transcription.language}
-                translationEnabled={settings.translation.enabled}
-                translationTarget={settings.translation.targetLanguage}
-                onTranscriptReady={() => {
-                  // Segments are emitted via the service callbacks
-                }}
-                onModelDownloadProgress={(percent) => {
-                  setIsDownloading(true);
-                  setDownloadProgress(percent);
-                }}
-              />
-            )}
-
-            {/* System Audio Panel */}
-            {sourceMode === 'system-audio' && (
-              <SystemAudioPanel
-                isActive={systemAudioActive}
-                onCaptureStart={() => setSystemAudioActive(true)}
-                onCaptureStop={() => setSystemAudioActive(false)}
-              />
-            )}
 
             {/* Model info (microphone mode) */}
             {sourceMode === 'microphone' && (
@@ -408,6 +410,7 @@ export default function LiveScreen() {
         )}
       </View>
       </GestureDetector>
+      )}
 
       {/* Bottom controls */}
       <View style={styles.controls}>
@@ -425,8 +428,8 @@ export default function LiveScreen() {
           </Text>
         )}
 
-        {/* Start/Stop button (hidden for URL mode which has its own controls) */}
-        {(sourceMode !== 'url' || isActive) && (
+        {/* Start/Stop button — always visible, transcribes via mic in all modes */}
+        {(
           <TouchableOpacity
             style={[styles.mainButton, isActive && styles.mainButtonActive]}
             onPress={isActive ? handleStop : handleStart}
@@ -581,10 +584,10 @@ const styles = StyleSheet.create({
   },
   controls: {
     paddingHorizontal: 24,
-    paddingBottom: 32,
-    paddingTop: 12,
+    paddingBottom: 10,
+    paddingTop: 4,
     alignItems: 'center',
-    gap: 10,
+    gap: 4,
     backgroundColor: '#0A0A0A',
   },
   levelContainer: {
@@ -604,9 +607,9 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
   mainButton: {
-    width: 120,
-    height: 120,
-    borderRadius: 60,
+    width: 56,
+    height: 56,
+    borderRadius: 28,
     backgroundColor: '#4FC3F7',
     justifyContent: 'center',
     alignItems: 'center',
@@ -622,12 +625,54 @@ const styles = StyleSheet.create({
   },
   mainButtonText: {
     color: '#FFF',
-    fontSize: 20,
+    fontSize: 12,
     fontWeight: '800',
-    letterSpacing: 2,
+    letterSpacing: 1,
   },
   segmentCount: {
     color: '#666',
+    fontSize: 11,
+  },
+  urlSection: {
+    flex: 1,
+  },
+  urlSourceRow: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    gap: 8,
+    paddingHorizontal: 16,
+    paddingTop: 8,
+    paddingBottom: 4,
+  },
+  urlCaptionBar: {
+    backgroundColor: 'rgba(26, 26, 46, 0.9)',
+    marginHorizontal: 16,
+    borderRadius: 10,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    marginTop: 4,
+  },
+  urlCaptionText: {
+    color: '#FFF',
+    fontSize: 16,
+    fontWeight: '600',
+    lineHeight: 22,
+  },
+  urlTranscriptScroll: {
+    flex: 1,
+    marginHorizontal: 16,
+    marginTop: 4,
+  },
+  urlTranscriptLine: {
+    color: '#CCC',
     fontSize: 13,
+    lineHeight: 20,
+    paddingVertical: 3,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: '#222',
+  },
+  urlTranscriptTime: {
+    color: '#666',
+    fontSize: 11,
   },
 });

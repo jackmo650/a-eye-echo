@@ -1,223 +1,204 @@
 // ============================================================================
-// System Audio Capture — Capture audio from other apps (Meet, Discord, Zoom)
+// System Audio Capture — Capture & transcribe audio from other apps
 //
-// On iOS:  Uses Broadcast Upload Extension (RPSystemBroadcastPickerView)
-//          which captures system audio via ReplayKit. User taps a button
-//          to start system-wide audio capture, then A.EYE.ECHO receives
-//          the audio buffer via an app group shared buffer.
+// On iOS: Uses Broadcast Upload Extension (RPBroadcastSampleHandler) to capture
+//         system audio. The captured audio is fed to SFSpeechRecognizer in the
+//         native module — only text results cross the JS bridge.
 //
-// On Android: Uses AudioPlaybackCapture API (Android 10+) which can capture
-//             audio from other apps. Requires FOREGROUND_SERVICE + permission.
-//
-// Both platforms deliver 16-bit PCM audio that we convert to Float32
-// and feed into the same transcription pipeline as the microphone.
+// The native module (AEyeEchoSystemAudio) handles:
+//   1. Showing the broadcast picker (user selects "A.EYE.ECHO")
+//   2. Reading PCM from shared ring buffer (App Group)
+//   3. Feeding audio to SFSpeechAudioBufferRecognitionRequest
+//   4. Auto-restarting at 55s (SFSpeechRecognizer 60s limit)
+//   5. Emitting text results to JS
 //
 // This enables live captioning of:
 //   - Google Meet / Zoom / Teams calls
+//   - YouTube / Twitch / podcasts in any app
 //   - Discord voice channels
-//   - YouTube / Twitch streams in browser
 //   - Any app playing audio on the device
-//
-// NOTE: This is a conceptual implementation. The native modules for
-// system audio capture require custom native code (Broadcast Extension
-// on iOS, AudioPlaybackCapture on Android) that must be built with
-// `expo prebuild` and native project modifications.
 // ============================================================================
 
 import { Platform, NativeModules, NativeEventEmitter } from 'react-native';
-import { Buffer } from 'buffer';
-
-type PCMCallback = (samples: Float32Array, sampleRate: number) => void;
+import { SpeechRecognitionEngine } from './speechRecognitionEngine';
+import type { WhisperLanguage } from '../types';
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
 export type SystemAudioStatus =
-  | 'unavailable'    // Platform doesn't support system audio capture
+  | 'unavailable'    // Platform doesn't support or native module missing
   | 'idle'           // Ready to capture
-  | 'requesting'     // Waiting for user to grant permission/start broadcast
-  | 'capturing'      // Actively capturing system audio
+  | 'requesting'     // Waiting for user to select broadcast extension
+  | 'capturing'      // Actively capturing and transcribing
   | 'error';
 
-export interface SystemAudioInfo {
-  /** Whether system audio capture is available on this device */
-  isAvailable: boolean;
-  /** Platform-specific requirements */
-  requirements: string;
-  /** Minimum OS version needed */
-  minOsVersion: string;
-}
+type ResultCallback = (text: string, isFinal: boolean, confidence: number) => void;
+type StatusCallback = (status: SystemAudioStatus) => void;
+type EndCallback = () => void;
 
 // ── State ───────────────────────────────────────────────────────────────────
 
 let _status: SystemAudioStatus = 'idle';
 let _capturing = false;
-let _pcmCallbacks: PCMCallback[] = [];
 let _emitter: NativeEventEmitter | null = null;
-let _subscription: { remove(): void } | null = null;
+let _subscriptions: Array<{ remove(): void }> = [];
 
-const SAMPLE_RATE = 16000;
+let _resultCallbacks: ResultCallback[] = [];
+let _statusCallbacks: StatusCallback[] = [];
+let _endCallbacks: EndCallback[] = [];
 
-// ── Platform Detection ──────────────────────────────────────────────────────
+// ── Native Module Access ────────────────────────────────────────────────────
 
-/**
- * Check if system audio capture is available on this device.
- *
- * iOS: Requires iOS 12+ and a Broadcast Upload Extension.
- * Android: Requires Android 10+ (API 29) and FOREGROUND_SERVICE permission.
- */
-export function getSystemAudioInfo(): SystemAudioInfo {
-  if (Platform.OS === 'ios') {
-    const version = parseInt(Platform.Version as string, 10);
-    return {
-      isAvailable: version >= 12,
-      requirements: 'Requires starting a Screen Broadcast from Control Center. Only the audio is captured — screen recording is not saved.',
-      minOsVersion: 'iOS 12+',
-    };
-  }
-
-  if (Platform.OS === 'android') {
-    const version = Platform.Version;
-    return {
-      isAvailable: typeof version === 'number' && version >= 29,
-      requirements: 'Requires Android 10 or later. A notification will appear while capturing.',
-      minOsVersion: 'Android 10 (API 29)',
-    };
-  }
-
-  return {
-    isAvailable: false,
-    requirements: 'System audio capture is not available on this platform.',
-    minOsVersion: 'N/A',
-  };
+function getNativeModule(): any {
+  return NativeModules.AEyeEchoSystemAudio ?? null;
 }
 
-// ── Int16 → Float32 ─────────────────────────────────────────────────────────
-
-function int16ToFloat32(int16Buffer: Buffer): Float32Array {
-  const numSamples = int16Buffer.length / 2;
-  const float32 = new Float32Array(numSamples);
-  for (let i = 0; i < numSamples; i++) {
-    float32[i] = int16Buffer.readInt16LE(i * 2) / 32768;
-  }
-  return float32;
+function isNativeAvailable(): boolean {
+  return getNativeModule() != null;
 }
 
 // ── Public API ──────────────────────────────────────────────────────────────
 
 /**
- * Start capturing system audio.
- *
- * On iOS: Triggers the RPSystemBroadcastPickerView which shows the system
- *         broadcast picker. User must tap "A.EYE.ECHO" to start.
- *
- * On Android: Starts a foreground service with AudioPlaybackCapture.
- *             User sees a system dialog to grant permission.
+ * Check if system audio capture is available on this device.
  */
-export async function startSystemAudioCapture(): Promise<void> {
-  const info = getSystemAudioInfo();
-  if (!info.isAvailable) {
-    throw new Error(`System audio capture not available. ${info.requirements}`);
+export function getSystemAudioStatus(): SystemAudioStatus {
+  return _status;
+}
+
+export function isSystemAudioCapturing(): boolean {
+  return _capturing;
+}
+
+/**
+ * Check availability. Returns false if native module is missing.
+ */
+export function isSystemAudioAvailable(): boolean {
+  if (Platform.OS !== 'ios') return false;
+  return isNativeAvailable();
+}
+
+/**
+ * Start system audio capture and transcription.
+ * Shows the iOS broadcast picker — user must tap "A.EYE.ECHO" to begin.
+ */
+export async function startSystemAudioCapture(language: WhisperLanguage = 'en'): Promise<void> {
+  const mod = getNativeModule();
+  if (!mod) {
+    _status = 'unavailable';
+    throw new Error(
+      'System audio capture requires a development build with the Broadcast Extension.',
+    );
   }
 
   if (_capturing) return;
 
   _status = 'requesting';
+  _notifyStatus();
 
   try {
-    // Access the native module for system audio capture
-    // This requires a custom native module to be implemented:
-    //   iOS: AEyeEchoBroadcastExtension (Broadcast Upload Extension)
-    //   Android: AEyeEchoAudioCaptureService (Foreground Service)
-    const SystemAudioModule = NativeModules.AEyeEchoSystemAudio;
+    // Set up event listeners
+    _emitter = new NativeEventEmitter(mod);
 
-    if (!SystemAudioModule) {
-      console.warn(
-        '[SystemAudio] Native module not available. ' +
-        'System audio capture requires native code. ' +
-        'Run `expo prebuild` and add the native broadcast extension.',
-      );
-      _status = 'unavailable';
-      throw new Error(
-        'System audio capture requires a development build. ' +
-        'This feature is not available in Expo Go.',
-      );
-    }
+    _subscriptions.push(
+      _emitter.addListener('onSystemAudioResult', (event: {
+        text: string;
+        isFinal: boolean;
+        confidence: number;
+      }) => {
+        if (!_capturing) return;
+        for (const cb of _resultCallbacks) {
+          cb(event.text, event.isFinal, event.confidence);
+        }
+      }),
+    );
 
-    // Set up event listener for PCM data from native module
-    _emitter = new NativeEventEmitter(SystemAudioModule);
-    _subscription = _emitter.addListener('onSystemAudioData', (event: { data: string }) => {
-      if (!_capturing || _pcmCallbacks.length === 0) return;
+    _subscriptions.push(
+      _emitter.addListener('onSystemAudioStatus', (event: { status: string }) => {
+        const newStatus = event.status as SystemAudioStatus;
+        _status = newStatus;
+        if (newStatus === 'capturing') {
+          _capturing = true;
+        }
+        _notifyStatus();
+      }),
+    );
 
-      const rawBuffer = Buffer.from(event.data, 'base64');
-      const float32Samples = int16ToFloat32(rawBuffer);
+    _subscriptions.push(
+      _emitter.addListener('onSystemAudioEnd', () => {
+        console.log('[SystemAudio] Broadcast ended by user/system');
+        _capturing = false;
+        _status = 'idle';
+        _notifyStatus();
+        for (const cb of _endCallbacks) cb();
+      }),
+    );
 
-      for (const cb of _pcmCallbacks) {
-        cb(float32Samples, SAMPLE_RATE);
-      }
-    });
-
-    // Start the native capture
-    await SystemAudioModule.startCapture({
-      sampleRate: SAMPLE_RATE,
-      channels: 1,
-      bitsPerSample: 16,
-    });
+    // Map language and start native capture + recognition
+    const locale = SpeechRecognitionEngine.mapLanguage(language);
+    mod.startCapture(locale);
 
     _capturing = true;
     _status = 'capturing';
-    console.log('[SystemAudio] Capturing system audio');
+    _notifyStatus();
+    console.log('[SystemAudio] Started — waiting for user to select broadcast extension');
 
   } catch (err) {
     _status = 'error';
+    _notifyStatus();
+    _cleanup();
     console.error('[SystemAudio] Failed to start:', err);
     throw err;
   }
 }
 
 /**
- * Stop capturing system audio.
+ * Stop system audio capture.
  */
 export async function stopSystemAudioCapture(): Promise<void> {
   if (!_capturing) return;
 
   try {
-    const SystemAudioModule = NativeModules.AEyeEchoSystemAudio;
-    if (SystemAudioModule) {
-      await SystemAudioModule.stopCapture();
+    const mod = getNativeModule();
+    if (mod) {
+      mod.stopCapture();
     }
   } catch (err) {
     console.error('[SystemAudio] Failed to stop:', err);
   }
 
-  _subscription?.remove();
-  _subscription = null;
-  _emitter = null;
-  _capturing = false;
-  _status = 'idle';
+  _cleanup();
   console.log('[SystemAudio] Stopped');
 }
 
-/**
- * Register a callback to receive system audio PCM data.
- * Same interface as audioCapture.ts onPCMData for drop-in replacement.
- */
-export function onSystemAudioData(cb: PCMCallback): () => void {
-  _pcmCallbacks.push(cb);
-  return () => {
-    _pcmCallbacks = _pcmCallbacks.filter(c => c !== cb);
-  };
+// ── Event Registration ──────────────────────────────────────────────────────
+
+export function onSystemAudioResult(cb: ResultCallback): () => void {
+  _resultCallbacks.push(cb);
+  return () => { _resultCallbacks = _resultCallbacks.filter(c => c !== cb); };
 }
 
-/**
- * Get current capture status.
- */
-export function getSystemAudioStatus(): SystemAudioStatus {
-  return _status;
+export function onSystemAudioStatusChange(cb: StatusCallback): () => void {
+  _statusCallbacks.push(cb);
+  return () => { _statusCallbacks = _statusCallbacks.filter(c => c !== cb); };
 }
 
-/**
- * Check if system audio capture is currently active.
- */
-export function isSystemAudioCapturing(): boolean {
-  return _capturing;
+export function onSystemAudioEnd(cb: EndCallback): () => void {
+  _endCallbacks.push(cb);
+  return () => { _endCallbacks = _endCallbacks.filter(c => c !== cb); };
+}
+
+// ── Internal ────────────────────────────────────────────────────────────────
+
+function _notifyStatus(): void {
+  for (const cb of _statusCallbacks) cb(_status);
+}
+
+function _cleanup(): void {
+  for (const sub of _subscriptions) sub.remove();
+  _subscriptions = [];
+  _emitter = null;
+  _capturing = false;
+  _status = 'idle';
+  _notifyStatus();
 }

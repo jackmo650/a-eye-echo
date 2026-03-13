@@ -7,6 +7,7 @@
 // ============================================================================
 
 import { ExpoSpeechRecognitionModule } from 'expo-speech-recognition';
+import { Audio, InterruptionModeIOS } from 'expo-av';
 import type { WhisperLanguage } from '../types';
 
 type ResultCallback = (text: string, isFinal: boolean, confidence: number) => void;
@@ -87,6 +88,15 @@ export class SpeechRecognitionEngine {
       throw new Error('Speech recognition permissions not granted');
     }
 
+    // Configure audio session ONCE via expo-av — this persists across
+    // speech recognition restarts and prevents WebView media interruption
+    await Audio.setAudioModeAsync({
+      allowsRecordingIOS: true,
+      playsInSilentModeIOS: true,
+      staysActiveInBackground: false,
+      interruptionModeIOS: InterruptionModeIOS.MixWithOthers,
+    });
+
     this._language = SpeechRecognitionEngine.mapLanguage(language);
     this._active = true;
     this._generation++;
@@ -144,21 +154,25 @@ export class SpeechRecognitionEngine {
     console.log(`[SpeechEngine] Starting session gen=${gen}, lang=${this._language}`);
 
     try {
-      ExpoSpeechRecognitionModule.start({
+      const opts: any = {
         lang: this._language,
         interimResults: true,
-        // continuous: true — keeps streaming. Segmentation is handled by
-        // transcriptionService via silence-based detection (2s pause = new segment).
         continuous: true,
         requiresOnDeviceRecognition: SpeechRecognitionEngine.supportsOnDevice(),
         addsPunctuation: true,
         iosTaskHint: 'dictation',
+        // ALWAYS pass iosCategory with mixWithOthers so that every session
+        // start (including restarts) keeps the audio session in mix mode.
+        // Without this, expo-speech-recognition uses a default config that
+        // interrupts WebView media playback.
         iosCategory: {
-          category: 'record',
-          categoryOptions: ['allowBluetooth'],
-          mode: 'measurement',
+          category: 'playAndRecord',
+          categoryOptions: ['mixWithOthers', 'allowBluetooth', 'defaultToSpeaker'],
+          mode: 'default',
         },
-      });
+      };
+
+      ExpoSpeechRecognitionModule.start(opts);
     } catch (err) {
       console.error('[SpeechEngine] Failed to start:', err);
       for (const cb of this._errorCallbacks) cb('start-failed', String(err));

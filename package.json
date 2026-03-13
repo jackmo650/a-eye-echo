@@ -19,6 +19,7 @@
     "buffer": "^6.0.3",
     "expo": "~52.0.0",
     "expo-av": "~15.0.0",
+    "expo-clipboard": "~7.0.1",
     "expo-file-system": "~18.0.0",
     "expo-haptics": "~14.0.0",
     "expo-keep-awake": "~14.0.0",
@@ -37,7 +38,9 @@
     "react-native-screens": "~4.4.0",
     "react-native-vision-camera": "^4.7.3",
     "react-native-vision-camera-face-detector": "^1.10.1",
+    "react-native-webview": "13.12.5",
     "react-native-worklets-core": "^1.6.3",
+    "react-native-ytdl": "^4.8.3",
     "whisper.rn": "^0.5.5",
     "zustand": "^5.0.0"
   },

@@ -82,3 +82,14 @@ export async function completeOnboarding(): Promise<void> {
     console.error('[Settings] Failed to save onboarding state:', err);
   }
 }
+
+/**
+ * Reset onboarding so it shows again on next launch.
+ */
+export async function resetOnboarding(): Promise<void> {
+  try {
+    await AsyncStorage.removeItem(ONBOARDING_KEY);
+  } catch (err) {
+    console.error('[Settings] Failed to reset onboarding state:', err);
+  }
+}

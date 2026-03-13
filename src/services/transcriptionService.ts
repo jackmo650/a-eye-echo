@@ -1,9 +1,12 @@
 // ============================================================================
-// Transcription Service — Streaming via expo-speech-recognition
+// Transcription Service — Multi-source audio transcription
 //
-// Uses Apple's SFSpeechRecognizer for continuous streaming transcription.
-// No model downloads, no WAV files, no setTimeout chains.
-// AudioCapture kept for amplitude metering only.
+// All modes use expo-speech-recognition (SFSpeechRecognizer):
+//   1. Microphone → streaming speech recognition
+//   2. System Audio → capture → speech recognition (requires native module)
+//   3. URL ingest → handled by urlIngestService (also uses speech recognition)
+//
+// AudioCapture kept for amplitude metering.
 // ============================================================================
 
 import type {
@@ -17,6 +20,14 @@ import { DEFAULT_TRANSCRIPTION_CONFIG, DEFAULT_TRANSLATION_CONFIG } from '../typ
 import { SpeechRecognitionEngine, getSpeechRecognitionEngine } from './speechRecognitionEngine';
 import * as AudioCapture from './audioCapture';
 import { getTranslationService } from './translationService';
+import {
+  startSystemAudioCapture,
+  stopSystemAudioCapture,
+  onSystemAudioResult,
+  onSystemAudioEnd,
+} from './systemAudioCapture';
+
+export type AudioSourceMode = 'microphone' | 'system-audio' | 'url';
 
 type TranscriptCallback = (segment: TranscriptSegment) => void;
 type StatusCallback = (status: TranscriptionStatus) => void;
@@ -76,17 +87,14 @@ export class TranscriptionService {
 
   private _audioCaptureUnsub: (() => void) | null = null;
   private _engine: SpeechRecognitionEngine | null = null;
+  private _sourceMode: AudioSourceMode = 'microphone';
+  private _systemAudioUnsubs: Array<() => void> = [];
 
   // Track current partial for live caption display
   private _currentPartialText = '';
-  // Silence timer: when partial text stops changing, finalize as segment
   private _silenceTimer: ReturnType<typeof setTimeout> | null = null;
-  // Last partial text received (for silence detection)
   private _lastPartialText = '';
-  // Whether we're in a restart cycle (suppress stale results)
   private _pendingRestart = false;
-
-  // Cleanup functions for engine event listeners
   private _engineUnsubs: Array<() => void> = [];
 
   get status(): TranscriptionStatus { return this._status; }
@@ -101,51 +109,19 @@ export class TranscriptionService {
     this._translationConfig = { ...this._translationConfig, ...partial };
   }
 
-  async start(_onModelDownloadProgress?: (percent: number) => void): Promise<void> {
+  async start(_onModelDownloadProgress?: (percent: number) => void, sourceMode: AudioSourceMode = 'microphone'): Promise<void> {
     if (this._active) return;
     this._active = true;
+    this._sourceMode = sourceMode;
     this._sessionStartMs = Date.now();
-    this._setStatus('loading-model');
 
-    try {
-      // SFSpeechRecognizer doesn't support auto-detect — always use explicit language
-      const language: WhisperLanguage = this._config.language || 'en';
-
-      // Check availability
-      if (!SpeechRecognitionEngine.isAvailable()) {
-        throw new Error('Speech recognition is not available on this device');
-      }
-
-      console.log(`[A.EYE.ECHO] Starting speech recognition, language: ${language}`);
-
-      // Start audio capture for amplitude metering only
-      try {
-        await AudioCapture.initAudioCapture();
-        this._audioCaptureUnsub = AudioCapture.onPCMData((samples, _sr) => {
-          if (!this._active) return;
-          const rmsDb = computeRmsDb(samples);
-          for (const cb of this._amplitudeCallbacks) cb(rmsDb);
-        });
-        await AudioCapture.startCapture();
-      } catch (audioErr) {
-        console.warn('[A.EYE.ECHO] Audio capture for amplitude failed (non-fatal):', audioErr);
-        // Non-fatal: amplitude bars won't work but transcription will
-      }
-
-      // Start speech recognition engine
-      this._engine = getSpeechRecognitionEngine();
-      this._setupEngineListeners();
-      await this._engine.start(language);
-
-      if (!this._active) return;
-      this._setStatus('active');
-      console.log('[A.EYE.ECHO] Active — streaming speech recognition');
-    } catch (err) {
-      console.error('[A.EYE.ECHO] Start failed:', err);
-      this._setStatus('error');
-      this._active = false;
-      this._cleanup();
-      throw err;
+    if (sourceMode === 'system-audio') {
+      await this._startSystemAudioMode();
+    } else {
+      // 'microphone' and 'url' both use mic-based speech recognition
+      // URL mode skips AudioCapture to avoid reconfiguring the audio session
+      // which would freeze the WebView
+      await this._startMicMode(sourceMode === 'url');
     }
   }
 
@@ -163,14 +139,12 @@ export class TranscriptionService {
 
   async resume(): Promise<void> {
     if (this._status !== 'paused') return;
-    const language: WhisperLanguage = this._config.language || 'en';
 
     try {
       await AudioCapture.startCapture();
-    } catch {
-      // Non-fatal
-    }
+    } catch { /* Non-fatal */ }
 
+    const language: WhisperLanguage = this._config.language || 'en';
     if (this._engine) {
       await this._engine.start(language);
     }
@@ -199,24 +173,61 @@ export class TranscriptionService {
     return () => { this._partialCallbacks = this._partialCallbacks.filter(c => c !== cb); };
   }
 
-  // ── Private ─────────────────────────────────────────────────────────────
+  // ── Microphone Mode (SFSpeechRecognizer) ────────────────────────────────
 
-  private _setStatus(status: TranscriptionStatus): void {
-    this._status = status;
-    for (const cb of this._statusCallbacks) cb(status);
+  private async _startMicMode(skipAudioCapture = false): Promise<void> {
+    this._setStatus('loading-model');
+
+    try {
+      const language: WhisperLanguage = this._config.language || 'en';
+
+      if (!SpeechRecognitionEngine.isAvailable()) {
+        throw new Error('Speech recognition is not available on this device');
+      }
+
+      console.log(`[A.EYE.ECHO] Starting speech recognition, language: ${language}, skipAudioCapture: ${skipAudioCapture}`);
+
+      // Start audio capture for amplitude metering only (skip in URL mode to avoid freezing WebView)
+      if (!skipAudioCapture) {
+        try {
+          await AudioCapture.initAudioCapture();
+          this._audioCaptureUnsub = AudioCapture.onPCMData((samples, _sr) => {
+            if (!this._active) return;
+            const rmsDb = computeRmsDb(samples);
+            for (const cb of this._amplitudeCallbacks) cb(rmsDb);
+          });
+          await AudioCapture.startCapture();
+        } catch (audioErr) {
+          console.warn('[A.EYE.ECHO] Audio capture for amplitude failed (non-fatal):', audioErr);
+        }
+      }
+
+      this._engine = getSpeechRecognitionEngine();
+      this._setupEngineListeners();
+      await this._engine.start(language);
+
+      if (!this._active) return;
+      this._setStatus('active');
+      console.log('[A.EYE.ECHO] Active — streaming speech recognition');
+    } catch (err) {
+      console.error('[A.EYE.ECHO] Start failed:', err);
+      this._setStatus('error');
+      this._active = false;
+      this._cleanup();
+      throw err;
+    }
   }
+
+  // ── Speech Recognition Engine Listeners ─────────────────────────────────
 
   private _setupEngineListeners(): void {
     if (!this._engine) return;
 
-    // Clean up old listeners
     for (const unsub of this._engineUnsubs) unsub();
     this._engineUnsubs = [];
 
-    // Result handler — silence-based segmentation with session restart.
-    // When you pause for 1.5s, we emit the full text as a segment then
-    // restart the recognition session for a clean slate.
     const SILENCE_SEGMENT_MS = 1500;
+    const isUrlMode = this._sourceMode === 'url';
 
     this._engineUnsubs.push(
       this._engine.onResult((text, isFinal, confidence) => {
@@ -225,18 +236,26 @@ export class TranscriptionService {
         const trimmed = text.trim();
         if (!trimmed) return;
 
-        // Update live caption with the full current text
         this._currentPartialText = trimmed;
         for (const cb of this._partialCallbacks) cb(trimmed);
 
-        // Reset silence timer on every new partial
         if (this._silenceTimer) {
           clearTimeout(this._silenceTimer);
           this._silenceTimer = null;
         }
 
+        if (isUrlMode) {
+          // URL mode: emit segments on final results but NEVER force a
+          // session restart — that reconfigures the audio session and
+          // pauses the WebView video. Let the session run until iOS
+          // naturally ends it at ~60s.
+          if (isFinal) {
+            this._emitSegment(trimmed, confidence);
+          }
+          return;
+        }
+
         if (!isFinal) {
-          // Schedule: if text doesn't change for 1.5s, finalize and restart
           this._lastPartialText = trimmed;
           this._silenceTimer = setTimeout(() => {
             if (!this._active) return;
@@ -245,13 +264,10 @@ export class TranscriptionService {
           return;
         }
 
-        // isFinal — session ending (55s restart or stop)
-        // Emit whatever text we have
         this._emitSegment(trimmed, confidence);
       }),
     );
 
-    // Session restart handler — clear state for new session
     this._engineUnsubs.push(
       this._engine.onSessionRestart(() => {
         console.log('[A.EYE.ECHO] Session restarted');
@@ -264,28 +280,22 @@ export class TranscriptionService {
       }),
     );
 
-    // Error handler
     this._engineUnsubs.push(
       this._engine.onError((error, message) => {
         console.error(`[A.EYE.ECHO] Recognition error: ${error} — ${message}`);
-        // The engine auto-restarts on 'end' event, so most errors recover automatically
       }),
     );
   }
 
-  /** Emit text as a segment then restart the recognition session for a clean slate. */
   private _finalizeAndRestart(text: string, confidence: number): void {
     this._emitSegment(text, confidence);
 
-    // Restart session so the next utterance starts fresh (no accumulated text)
     this._pendingRestart = true;
     this._currentPartialText = '';
     for (const cb of this._partialCallbacks) cb('');
 
-    // Use the engine's internal restart which handles stop→start cleanly
     if (this._engine) {
       console.log('[A.EYE.ECHO] Restarting session for next segment');
-      // Stop triggers end event → auto-restart in engine
       try {
         const { ExpoSpeechRecognitionModule } = require('expo-speech-recognition');
         ExpoSpeechRecognitionModule.stop();
@@ -295,7 +305,67 @@ export class TranscriptionService {
     }
   }
 
-  /** Create and emit a TranscriptSegment from recognized text. */
+  // ── System Audio Mode ──────────────────────────────────────────────────
+
+  private async _startSystemAudioMode(): Promise<void> {
+    this._setStatus('loading-model');
+
+    try {
+      const language = this._config.language || 'en';
+      console.log(`[A.EYE.ECHO] Starting system audio capture, language: ${language}`);
+
+      // Register for text results from native module
+      this._systemAudioUnsubs.push(
+        onSystemAudioResult((text, isFinal, confidence) => {
+          if (!this._active) return;
+
+          const trimmed = text.trim();
+          if (!trimmed) return;
+
+          // Feed partials to live caption display
+          this._currentPartialText = trimmed;
+          for (const cb of this._partialCallbacks) cb(trimmed);
+
+          if (isFinal) {
+            this._emitSegment(trimmed, confidence);
+          }
+        }),
+      );
+
+      // Handle broadcast ending (user stopped from Control Center)
+      this._systemAudioUnsubs.push(
+        onSystemAudioEnd(() => {
+          if (this._active) {
+            console.log('[A.EYE.ECHO] System audio broadcast ended');
+            this._active = false;
+            this._cleanup();
+            this._setStatus('idle');
+          }
+        }),
+      );
+
+      // Start native capture + recognition
+      await startSystemAudioCapture(language);
+
+      if (!this._active) return;
+      this._setStatus('active');
+      console.log('[A.EYE.ECHO] Active — system audio capture + recognition');
+    } catch (err) {
+      console.error('[A.EYE.ECHO] System audio start failed:', err);
+      this._setStatus('error');
+      this._active = false;
+      this._cleanup();
+      throw err;
+    }
+  }
+
+  // ── Shared ──────────────────────────────────────────────────────────────
+
+  private _setStatus(status: TranscriptionStatus): void {
+    this._status = status;
+    for (const cb of this._statusCallbacks) cb(status);
+  }
+
   private _emitSegment(text: string, confidence: number): void {
     const cleanText = filterHallucinations(text);
     if (!cleanText) {
@@ -321,9 +391,7 @@ export class TranscriptionService {
     };
 
     if (this._translationConfig.enabled) {
-      // Fire-and-forget but with guaranteed segment emission
       this._translateAndEmit(segment, cleanText).catch(() => {
-        // Ensure segment is emitted even if translation throws unexpectedly
         console.log(`[A.EYE.ECHO] → "${cleanText}" (translation failed)`);
         for (const cb of this._transcriptCallbacks) cb(segment);
       });
@@ -350,18 +418,23 @@ export class TranscriptionService {
   }
 
   private _cleanup(): void {
-    // Stop speech recognition
+    // Stop speech recognition (mic mode)
     for (const unsub of this._engineUnsubs) unsub();
     this._engineUnsubs = [];
     this._engine?.stop();
     this._engine = null;
 
-    // Stop audio capture
+    // Stop audio capture (mic mode)
     AudioCapture.stopCapture();
     if (this._audioCaptureUnsub) {
       this._audioCaptureUnsub();
       this._audioCaptureUnsub = null;
     }
+
+    // Stop system audio capture
+    for (const unsub of this._systemAudioUnsubs) unsub();
+    this._systemAudioUnsubs = [];
+    stopSystemAudioCapture().catch(() => {});
 
     this._currentPartialText = '';
     this._lastPartialText = '';

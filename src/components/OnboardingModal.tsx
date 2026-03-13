@@ -22,7 +22,7 @@ interface OnboardingModalProps {
 const PAGES = [
   {
     title: 'Welcome to A.EYE.ECHO',
-    body: 'Real-time speech-to-text captioning designed for deaf and hard-of-hearing users. Everything runs on your device — no internet required after setup.',
+    body: 'Real-time speech-to-text captioning designed for deaf and hard-of-hearing users. Powered by on-device speech recognition — fast, private, and no setup needed.',
     accent: '#4FC3F7',
   },
   {
@@ -31,8 +31,13 @@ const PAGES = [
     accent: '#81C784',
   },
   {
+    title: 'URL / Video Mode',
+    body: 'Paste any URL — Dailymotion, podcasts, news — and play it in the built-in player. Tap Start to caption the audio live while you watch.',
+    accent: '#FF7043',
+  },
+  {
     title: 'Multiple Languages',
-    body: 'Transcribe speech in 30+ languages with auto-detection. Enable auto-translation to read captions in your preferred language.',
+    body: 'Transcribe speech in 30+ languages. Enable auto-translation to read captions in your preferred language.',
     accent: '#FFB74D',
   },
   {
@@ -47,7 +52,7 @@ const PAGES = [
   },
   {
     title: 'Getting Started',
-    body: 'Tap the big Start button on the Live tab.\n\nFirst time? A small language model (~142 MB) will download. After that, everything works offline.\n\nGo to Settings to customize your experience.',
+    body: 'Tap Start on the Live tab to begin captioning.\n\nSwitch between Microphone and URL/Video modes using the tabs.\n\nGo to Settings to customize your experience.',
     accent: '#4FC3F7',
   },
 ];
