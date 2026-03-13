@@ -184,6 +184,8 @@ export default function LiveScreen() {
       const signService = getSignLanguageService();
       signService.start(settings.signLanguage.language, Date.now());
       signService.onRecognition((segment: TranscriptSegment) => {
+        // Show in live caption area
+        setCurrentText(`🤟 ${segment.text}`);
         addSegment(segment);
         if (settings.autoSaveSession) {
           db.saveSegment(sessionId, segment).catch(console.error);
@@ -270,11 +272,12 @@ export default function LiveScreen() {
       />
 
       {/* Camera face detector (small preview in corner) */}
-      {settings.cameraEnabled && isActive && (
+      {(settings.cameraEnabled || settings.signLanguage.enabled) && isActive && (
         <CameraFaceDetector
           cameraPosition={settings.cameraPosition}
           isActive={isActive}
-          showPreview={true}
+          showPreview={settings.cameraEnabled}
+          signLanguageEnabled={settings.signLanguage.enabled}
         />
       )}
 

@@ -208,6 +208,8 @@ export interface TranslationConfig {
   targetLanguage: string;
   /** Show original text alongside translation */
   showOriginal: boolean;
+  /** DeepL API key (free tier: 500K chars/month) */
+  deeplApiKey: string;
 }
 
 // ── Sign Language ────────────────────────────────────────────────────────────

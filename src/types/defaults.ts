@@ -40,6 +40,7 @@ export const DEFAULT_TRANSLATION_CONFIG: TranslationConfig = {
   enabled: false,
   targetLanguage: 'en',
   showOriginal: true,
+  deeplApiKey: '',
 };
 
 export const DEFAULT_SIGN_LANGUAGE_CONFIG: SignLanguageConfig = {

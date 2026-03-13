@@ -1,34 +1,33 @@
 // ============================================================================
-// Sign Language Service — MediaPipe hand landmarks → ASL/BSL recognition
+// Sign Language Service — Apple Vision hand pose → ASL recognition
 //
 // Pipeline:
-//   Camera Frame → MediaPipe Hand Landmarker (21 keypoints × 2 hands)
-//     → Landmark Buffer (rolling window)
-//       → ASL Classifier (distance-based heuristic + learned patterns)
-//         → Recognized sign (letter/word)
-//           → Text assembly → Translation (optional) → Caption
+//   Camera Frame → Apple Vision VNDetectHumanHandPoseRequest (21 joints)
+//     → Geometry-based finger state analysis
+//       → ASL letter classification (finger extension patterns)
+//         → Debounce + buffer → Caption segments
 //
-// Phase 1: ASL fingerspelling alphabet (A-Z) via static gesture classification
-// using hand landmark geometry (angles, distances, finger states).
-//
-// Dependencies:
-//   - react-native-vision-camera (frame processor)
-//   - MediaPipe hand landmark model (bundled or loaded via TFLite)
+// Uses finger extension states (extended/curled) determined by comparing
+// joint positions. Works with any coordinate system (Apple Vision, MediaPipe).
 // ============================================================================
 
 import type {
   HandLandmark,
   HandLandmarks,
   SignLanguageType,
-  SignRecognition,
   TranscriptSegment,
 } from '../types';
 
 type RecognitionCallback = (segment: TranscriptSegment) => void;
 
-// ── ASL Fingerspelling Classifier ───────────────────────────────────────────
+// ── Joint Indices (MediaPipe / Apple Vision mapped order) ──────────────────
+// 0: wrist
+// 1-4: thumb (CMC, MCP, IP, TIP)
+// 5-8: index (MCP, PIP, DIP, TIP)
+// 9-12: middle (MCP, PIP, DIP, TIP)
+// 13-16: ring (MCP, PIP, DIP, TIP)
+// 17-20: pinky (MCP, PIP, DIP, TIP)
 
-// MediaPipe hand landmark indices
 const WRIST = 0;
 const THUMB_CMC = 1, THUMB_MCP = 2, THUMB_IP = 3, THUMB_TIP = 4;
 const INDEX_MCP = 5, INDEX_PIP = 6, INDEX_DIP = 7, INDEX_TIP = 8;
@@ -36,208 +35,208 @@ const MIDDLE_MCP = 9, MIDDLE_PIP = 10, MIDDLE_DIP = 11, MIDDLE_TIP = 12;
 const RING_MCP = 13, RING_PIP = 14, RING_DIP = 15, RING_TIP = 16;
 const PINKY_MCP = 17, PINKY_PIP = 18, PINKY_DIP = 19, PINKY_TIP = 20;
 
+// ── Geometry Helpers ───────────────────────────────────────────────────────
+
+function dist(a: HandLandmark, b: HandLandmark): number {
+  const dx = a.x - b.x;
+  const dy = a.y - b.y;
+  return Math.sqrt(dx * dx + dy * dy);
+}
+
+function dist3(a: HandLandmark, b: HandLandmark): number {
+  const dx = a.x - b.x;
+  const dy = a.y - b.y;
+  const dz = (a.z || 0) - (b.z || 0);
+  return Math.sqrt(dx * dx + dy * dy + dz * dz);
+}
+
 interface FingerState {
-  isExtended: boolean;
-  curl: number; // 0 = straight, 1 = fully curled
-}
-
-function distance(a: HandLandmark, b: HandLandmark): number {
-  return Math.sqrt((a.x - b.x) ** 2 + (a.y - b.y) ** 2 + (a.z - b.z) ** 2);
-}
-
-function getFingerStates(points: HandLandmark[]): {
-  thumb: FingerState;
-  index: FingerState;
-  middle: FingerState;
-  ring: FingerState;
-  pinky: FingerState;
-} {
-  const fingerExtended = (tip: number, pip: number, mcp: number): FingerState => {
-    const tipToWrist = distance(points[tip], points[WRIST]);
-    const pipToWrist = distance(points[pip], points[WRIST]);
-    const mcpToWrist = distance(points[mcp], points[WRIST]);
-    const isExtended = tipToWrist > pipToWrist;
-    const maxExtension = mcpToWrist * 1.8;
-    const curl = 1 - Math.min(1, tipToWrist / maxExtension);
-    return { isExtended, curl };
-  };
-
-  // Thumb uses different logic (lateral movement)
-  const thumbTipToIndex = distance(points[THUMB_TIP], points[INDEX_MCP]);
-  const thumbIsExtended = thumbTipToIndex > distance(points[THUMB_MCP], points[INDEX_MCP]) * 0.8;
-  const thumbCurl = thumbIsExtended ? 0 : 0.8;
-
-  return {
-    thumb: { isExtended: thumbIsExtended, curl: thumbCurl },
-    index: fingerExtended(INDEX_TIP, INDEX_PIP, INDEX_MCP),
-    middle: fingerExtended(MIDDLE_TIP, MIDDLE_PIP, MIDDLE_MCP),
-    ring: fingerExtended(RING_TIP, RING_PIP, RING_MCP),
-    pinky: fingerExtended(PINKY_TIP, PINKY_PIP, PINKY_MCP),
-  };
+  extended: boolean;    // Is the finger extended (straight)?
+  curled: boolean;      // Is the finger fully curled (fist)?
+  halfCurled: boolean;  // Partially curled (C/O shape)?
 }
 
 /**
- * Classify ASL fingerspelling from hand landmark geometry.
- * Returns the letter with confidence, or null if unrecognized.
- *
- * This is a heuristic classifier based on finger extension patterns.
- * Production would use a trained CNN/LSTM on landmark sequences.
+ * Determine finger extension state by comparing distances.
+ * A finger is extended if its TIP is farther from the wrist than its MCP.
+ * A finger is curled if its TIP is close to or below its MCP.
  */
-function classifyASLLetter(points: HandLandmark[]): { sign: string; confidence: number } | null {
+function getFingerState(p: HandLandmark[], mcp: number, pip: number, dip: number, tip: number, wrist: number): FingerState {
+  const tipToWrist = dist(p[tip], p[wrist]);
+  const mcpToWrist = dist(p[mcp], p[wrist]);
+  const tipToMcp = dist(p[tip], p[mcp]);
+  const pipToMcp = dist(p[pip], p[mcp]);
+  const fingerLen = pipToMcp + dist(p[dip], p[pip]) + dist(p[tip], p[dip]);
+
+  // Extended: tip is far from wrist relative to MCP
+  const extended = tipToWrist > mcpToWrist * 1.1 && tipToMcp > fingerLen * 0.5;
+  // Curled: tip is close to MCP (fist)
+  const curled = tipToMcp < fingerLen * 0.35;
+  // Half curled: between extended and curled
+  const halfCurled = !extended && !curled;
+
+  return { extended, curled, halfCurled };
+}
+
+function getThumbState(p: HandLandmark[]): FingerState {
+  const tipToWrist = dist(p[THUMB_TIP], p[WRIST]);
+  const mcpToWrist = dist(p[THUMB_MCP], p[WRIST]);
+  const tipToIndex = dist(p[THUMB_TIP], p[INDEX_MCP]);
+  const tipToPinky = dist(p[THUMB_TIP], p[PINKY_MCP]);
+  const palmWidth = dist(p[INDEX_MCP], p[PINKY_MCP]);
+
+  // Thumb extended: tip is far from palm center
+  const extended = tipToWrist > mcpToWrist * 1.2 && tipToIndex > palmWidth * 0.6;
+  // Thumb tucked: tip is close to index base
+  const curled = tipToIndex < palmWidth * 0.4;
+  const halfCurled = !extended && !curled;
+
+  return { extended, curled, halfCurled };
+}
+
+// ── ASL Letter Classification ──────────────────────────────────────────────
+
+interface ClassifyResult {
+  sign: string;
+  confidence: number;
+}
+
+function classifyASLGesture(points: HandLandmark[]): ClassifyResult | null {
   if (points.length < 21) return null;
 
-  const f = getFingerStates(points);
-  const extCount = [f.thumb, f.index, f.middle, f.ring, f.pinky]
-    .filter(s => s.isExtended).length;
+  const p = points;
+  const thumb = getThumbState(p);
+  const index = getFingerState(p, INDEX_MCP, INDEX_PIP, INDEX_DIP, INDEX_TIP, WRIST);
+  const middle = getFingerState(p, MIDDLE_MCP, MIDDLE_PIP, MIDDLE_DIP, MIDDLE_TIP, WRIST);
+  const ring = getFingerState(p, RING_MCP, RING_PIP, RING_DIP, RING_TIP, WRIST);
+  const pinky = getFingerState(p, PINKY_MCP, PINKY_PIP, PINKY_DIP, PINKY_TIP, WRIST);
 
-  // Common ASL static signs (subset — most recognizable)
+  const palmWidth = dist(p[INDEX_MCP], p[PINKY_MCP]);
 
-  // A: Fist with thumb alongside (all fingers curled, thumb extended slightly)
-  if (!f.index.isExtended && !f.middle.isExtended && !f.ring.isExtended && !f.pinky.isExtended && f.thumb.isExtended) {
-    return { sign: 'A', confidence: 0.85 };
+  // Count extended fingers (not counting thumb)
+  const extCount = [index, middle, ring, pinky].filter(f => f.extended).length;
+  const curlCount = [index, middle, ring, pinky].filter(f => f.curled).length;
+
+  // Finger spread: distance between index and middle tips
+  const indexMiddleSpread = dist(p[INDEX_TIP], p[MIDDLE_TIP]);
+  const fingersSpread = indexMiddleSpread > palmWidth * 0.4;
+
+  // Thumb-index distance
+  const thumbIndexDist = dist(p[THUMB_TIP], p[INDEX_TIP]);
+  const thumbIndexClose = thumbIndexDist < palmWidth * 0.3;
+
+  // ── Pattern matching (most distinctive letters first) ──
+
+  // L — index extended + thumb extended out, rest curled
+  if (index.extended && !middle.extended && !ring.extended && !pinky.extended && thumb.extended) {
+    return { sign: 'L', confidence: 0.85 };
   }
 
-  // B: Fingers extended, thumb tucked across palm
-  if (f.index.isExtended && f.middle.isExtended && f.ring.isExtended && f.pinky.isExtended && !f.thumb.isExtended) {
-    return { sign: 'B', confidence: 0.88 };
+  // Y — pinky + thumb extended, rest curled
+  if (!index.extended && !middle.extended && !ring.extended && pinky.extended && thumb.extended) {
+    return { sign: 'Y', confidence: 0.85 };
   }
 
-  // C: Curved hand (all fingers partially extended, forming C shape)
-  if (extCount >= 3 && f.index.curl > 0.3 && f.index.curl < 0.7) {
-    const thumbToIndex = distance(points[THUMB_TIP], points[INDEX_TIP]);
-    const palmWidth = distance(points[INDEX_MCP], points[PINKY_MCP]);
-    if (thumbToIndex > palmWidth * 0.5 && thumbToIndex < palmWidth * 1.5) {
-      return { sign: 'C', confidence: 0.75 };
-    }
+  // I — only pinky extended, thumb tucked
+  if (!index.extended && !middle.extended && !ring.extended && pinky.extended && !thumb.extended) {
+    return { sign: 'I', confidence: 0.8 };
   }
 
-  // D: Index extended, others touching thumb
-  if (f.index.isExtended && !f.middle.isExtended && !f.ring.isExtended && !f.pinky.isExtended) {
-    const middleToThumb = distance(points[MIDDLE_TIP], points[THUMB_TIP]);
-    const palmWidth = distance(points[INDEX_MCP], points[PINKY_MCP]);
-    if (middleToThumb < palmWidth * 0.4) {
-      return { sign: 'D', confidence: 0.82 };
-    }
+  // V — index + middle extended and spread, rest curled
+  if (index.extended && middle.extended && !ring.extended && !pinky.extended && fingersSpread) {
+    return { sign: 'V', confidence: 0.85 };
   }
 
-  // E: All fingers curled, fingertips near thumb
-  if (!f.index.isExtended && !f.middle.isExtended && !f.ring.isExtended && !f.pinky.isExtended && !f.thumb.isExtended) {
-    return { sign: 'E', confidence: 0.7 };
+  // U — index + middle extended and close together, rest curled
+  if (index.extended && middle.extended && !ring.extended && !pinky.extended && !fingersSpread) {
+    return { sign: 'U', confidence: 0.8 };
   }
 
-  // F: Index and thumb touching, other three extended
-  if (f.middle.isExtended && f.ring.isExtended && f.pinky.isExtended) {
-    const thumbToIndex = distance(points[THUMB_TIP], points[INDEX_TIP]);
-    const palmWidth = distance(points[INDEX_MCP], points[PINKY_MCP]);
-    if (thumbToIndex < palmWidth * 0.25) {
-      return { sign: 'F', confidence: 0.82 };
-    }
-  }
-
-  // I: Pinky extended only
-  if (!f.index.isExtended && !f.middle.isExtended && !f.ring.isExtended && f.pinky.isExtended) {
-    return { sign: 'I', confidence: 0.88 };
-  }
-
-  // K: Index + middle extended, spread apart
-  if (f.index.isExtended && f.middle.isExtended && !f.ring.isExtended && !f.pinky.isExtended) {
-    const spread = distance(points[INDEX_TIP], points[MIDDLE_TIP]);
-    const palmWidth = distance(points[INDEX_MCP], points[PINKY_MCP]);
-    if (spread > palmWidth * 0.3) {
-      return { sign: 'K', confidence: 0.78 };
-    }
-  }
-
-  // L: Index + thumb extended at right angle
-  if (f.thumb.isExtended && f.index.isExtended && !f.middle.isExtended && !f.ring.isExtended && !f.pinky.isExtended) {
-    return { sign: 'L', confidence: 0.88 };
-  }
-
-  // O: All fingertips touching thumb (circle shape)
-  if (extCount <= 1) {
-    const indexToThumb = distance(points[INDEX_TIP], points[THUMB_TIP]);
-    const middleToThumb = distance(points[MIDDLE_TIP], points[THUMB_TIP]);
-    const palmWidth = distance(points[INDEX_MCP], points[PINKY_MCP]);
-    if (indexToThumb < palmWidth * 0.3 && middleToThumb < palmWidth * 0.3) {
-      return { sign: 'O', confidence: 0.75 };
-    }
-  }
-
-  // R: Index + middle crossed
-  if (f.index.isExtended && f.middle.isExtended && !f.ring.isExtended && !f.pinky.isExtended) {
-    const spread = distance(points[INDEX_TIP], points[MIDDLE_TIP]);
-    const palmWidth = distance(points[INDEX_MCP], points[PINKY_MCP]);
-    if (spread < palmWidth * 0.15) {
+  // R — index + middle extended and crossed (close tips), rest curled
+  if (index.extended && middle.extended && !ring.extended && !pinky.extended) {
+    const tipDist = dist(p[INDEX_TIP], p[MIDDLE_TIP]);
+    if (tipDist < palmWidth * 0.15) {
       return { sign: 'R', confidence: 0.75 };
     }
   }
 
-  // U: Index + middle extended, together
-  if (f.index.isExtended && f.middle.isExtended && !f.ring.isExtended && !f.pinky.isExtended) {
-    return { sign: 'U', confidence: 0.72 };
+  // W — index + middle + ring extended, pinky curled
+  if (index.extended && middle.extended && ring.extended && !pinky.extended) {
+    return { sign: 'W', confidence: 0.85 };
   }
 
-  // V: Index + middle extended, spread (peace sign)
-  if (f.index.isExtended && f.middle.isExtended && !f.ring.isExtended && !f.pinky.isExtended) {
-    const spread = distance(points[INDEX_TIP], points[MIDDLE_TIP]);
-    const palmWidth = distance(points[INDEX_MCP], points[PINKY_MCP]);
-    if (spread > palmWidth * 0.4) {
-      return { sign: 'V', confidence: 0.85 };
+  // B — all 4 fingers extended, thumb tucked
+  if (extCount === 4 && !thumb.extended) {
+    return { sign: 'B', confidence: 0.8 };
+  }
+
+  // 5/spread hand — all 4 fingers extended + thumb extended
+  if (extCount === 4 && thumb.extended) {
+    return { sign: '5', confidence: 0.75 };
+  }
+
+  // D — index extended, rest curled, thumb touches middle
+  if (index.extended && !middle.extended && !ring.extended && !pinky.extended && !thumb.extended) {
+    return { sign: 'D', confidence: 0.8 };
+  }
+
+  // K — index + middle extended, spread, thumb between them
+  if (index.extended && middle.extended && !ring.extended && !pinky.extended && thumb.halfCurled) {
+    if (fingersSpread) {
+      return { sign: 'K', confidence: 0.75 };
     }
   }
 
-  // W: Index + middle + ring extended, spread
-  if (f.index.isExtended && f.middle.isExtended && f.ring.isExtended && !f.pinky.isExtended) {
-    return { sign: 'W', confidence: 0.82 };
+  // H — index + middle extended horizontally (pointing sideways)
+  // Similar to U but oriented differently — hard to distinguish without orientation
+  // Skip for now, covered by U
+
+  // A — all fingers curled into fist, thumb alongside (not tucked under)
+  if (curlCount >= 3 && thumb.halfCurled) {
+    return { sign: 'A', confidence: 0.7 };
   }
 
-  // Y: Thumb + pinky extended (hang loose)
-  if (f.thumb.isExtended && !f.index.isExtended && !f.middle.isExtended && !f.ring.isExtended && f.pinky.isExtended) {
-    return { sign: 'Y', confidence: 0.9 };
+  // S — all fingers curled, thumb over fingers
+  if (curlCount >= 3 && thumb.curled) {
+    return { sign: 'S', confidence: 0.7 };
   }
 
-  // 5 / Open hand: all fingers extended
-  if (extCount === 5) {
-    return { sign: '5', confidence: 0.85 };
+  // E — all fingers curled, tips touching thumb
+  if (curlCount === 0 && extCount === 0) {
+    // All half-curled — could be C, O, or E
+    if (thumbIndexClose) {
+      return { sign: 'O', confidence: 0.7 };
+    }
+    return { sign: 'E', confidence: 0.6 };
   }
 
-  // 1 / Index point: only index extended
-  if (f.index.isExtended && !f.middle.isExtended && !f.ring.isExtended && !f.pinky.isExtended && !f.thumb.isExtended) {
-    return { sign: '1', confidence: 0.85 };
+  // C — all fingers half-curled in C shape
+  if (index.halfCurled && middle.halfCurled && ring.halfCurled && pinky.halfCurled && thumb.halfCurled) {
+    return { sign: 'C', confidence: 0.65 };
+  }
+
+  // O — all half-curled, thumb and index tips close (circle)
+  if (thumbIndexClose && index.halfCurled) {
+    return { sign: 'O', confidence: 0.7 };
+  }
+
+  // F — index + thumb touching (circle), other 3 extended
+  if (thumbIndexClose && middle.extended && ring.extended && pinky.extended) {
+    return { sign: 'F', confidence: 0.8 };
+  }
+
+  // G — index pointing sideways, thumb extended
+  if (index.extended && !middle.extended && !ring.extended && !pinky.extended && thumb.halfCurled) {
+    return { sign: 'G', confidence: 0.65 };
+  }
+
+  // X — index half-curled (hooked), rest curled
+  if (index.halfCurled && middle.curled && ring.curled && pinky.curled) {
+    return { sign: 'X', confidence: 0.65 };
   }
 
   return null;
 }
-
-// ── Common Word Patterns (static gestures) ──────────────────────────────────
-
-const COMMON_SIGNS: Record<string, (points: HandLandmark[]) => number> = {
-  'HELLO': (points) => {
-    // Open hand near face, all fingers extended
-    const f = getFingerStates(points);
-    const allExtended = f.index.isExtended && f.middle.isExtended && f.ring.isExtended && f.pinky.isExtended && f.thumb.isExtended;
-    return allExtended ? 0.6 : 0; // Lower confidence — needs temporal context
-  },
-  'YES': (points) => {
-    // Fist shape (S hand) — nod detection needs temporal, this is just the handshape
-    const f = getFingerStates(points);
-    const fist = !f.index.isExtended && !f.middle.isExtended && !f.ring.isExtended && !f.pinky.isExtended;
-    return fist ? 0.5 : 0;
-  },
-  'NO': (points) => {
-    // Index + middle + thumb pinch together repeatedly
-    const thumbToIndex = distance(points[THUMB_TIP], points[INDEX_TIP]);
-    const thumbToMiddle = distance(points[THUMB_TIP], points[MIDDLE_TIP]);
-    const palmWidth = distance(points[INDEX_MCP], points[PINKY_MCP]);
-    return (thumbToIndex < palmWidth * 0.2 && thumbToMiddle < palmWidth * 0.2) ? 0.5 : 0;
-  },
-  'THANK YOU': (points) => {
-    // Flat hand near chin, moving outward — handshape check only
-    const f = getFingerStates(points);
-    const flatHand = f.index.isExtended && f.middle.isExtended && f.ring.isExtended && f.pinky.isExtended;
-    return flatHand ? 0.4 : 0; // Very low — needs motion context
-  },
-};
 
 // ── Sign Language Service ───────────────────────────────────────────────────
 
@@ -251,7 +250,7 @@ export class SignLanguageService {
   // Recognition state
   private _lastRecognition: string | null = null;
   private _sameSignCount = 0;
-  private _confirmThreshold = 3; // Frames needed to confirm a letter
+  private _confirmThreshold = 4; // Frames needed to confirm a letter
   private _letterBuffer: string[] = [];
   private _lastLetterTime = 0;
   private _wordTimeout = 1500; // ms pause to insert space
@@ -259,7 +258,7 @@ export class SignLanguageService {
 
   // Debounce
   private _lastEmitTime = 0;
-  private _minEmitInterval = 500; // ms between emitted letters
+  private _minEmitInterval = 800; // ms between emitted letters
 
   start(signLanguage: SignLanguageType = 'asl', sessionStartMs: number = Date.now()): void {
     this._active = true;
@@ -272,7 +271,6 @@ export class SignLanguageService {
   }
 
   stop(): void {
-    // Flush remaining letters as final segment
     if (this._letterBuffer.length > 0) {
       this._emitWord();
     }
@@ -286,38 +284,21 @@ export class SignLanguageService {
     return () => { this._callbacks = this._callbacks.filter(c => c !== cb); };
   }
 
-  /**
-   * Process hand landmarks from a single frame.
-   * Called from Vision Camera frame processor via worklet bridge.
-   *
-   * @param landmarks Array of HandLandmarks (one per detected hand)
-   */
   processHandLandmarks(landmarks: HandLandmarks[]): void {
     if (!this._active || landmarks.length === 0) return;
 
-    // Use the dominant hand (right-handed default for ASL)
     const primaryHand = landmarks.find(h => h.handedness === 'right')
       || landmarks[0];
 
     if (primaryHand.points.length < 21) return;
 
-    // Try letter classification first
-    const letterResult = classifyASLLetter(primaryHand.points);
+    const result = classifyASLGesture(primaryHand.points);
 
-    // Also check common word signs
-    let bestWord: { sign: string; confidence: number } | null = null;
-    for (const [word, detector] of Object.entries(COMMON_SIGNS)) {
-      const confidence = detector(primaryHand.points);
-      if (confidence > 0.6 && (!bestWord || confidence > bestWord.confidence)) {
-        bestWord = { sign: word, confidence };
-      }
+    if (result) {
+      console.log(`[SignLanguage] ${result.sign} (${(result.confidence * 100).toFixed(0)}%)`);
     }
 
-    // Prefer high-confidence word over letter
-    const result = (bestWord && bestWord.confidence > 0.7) ? bestWord : letterResult;
-
-    if (!result || result.confidence < 0.7) {
-      // No confident recognition — check if we should flush buffer
+    if (!result || result.confidence < 0.6) {
       const now = Date.now();
       if (this._letterBuffer.length > 0 && now - this._lastLetterTime > this._wordTimeout) {
         this._emitWord();
@@ -337,28 +318,16 @@ export class SignLanguageService {
 
     if (this._sameSignCount >= this._confirmThreshold) {
       const now = Date.now();
-
-      // Don't emit the same letter too quickly
       if (now - this._lastEmitTime < this._minEmitInterval) return;
 
-      // Check for word timeout (insert space)
       if (this._letterBuffer.length > 0 && now - this._lastLetterTime > this._wordTimeout) {
         this._emitWord();
       }
 
-      // Is this a word sign or a letter?
-      if (result.sign.length > 1) {
-        // Word sign — emit immediately
-        if (this._letterBuffer.length > 0) this._emitWord();
-        this._emitDirectWord(result.sign, result.confidence);
-      } else {
-        // Letter — add to buffer
-        this._letterBuffer.push(result.sign);
-        this._lastLetterTime = now;
-      }
-
+      this._letterBuffer.push(result.sign);
+      this._lastLetterTime = now;
       this._lastEmitTime = now;
-      this._sameSignCount = 0; // Reset to prevent rapid repeat
+      this._sameSignCount = 0;
     }
   }
 

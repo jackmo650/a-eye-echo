@@ -262,7 +262,7 @@ export default function SettingsScreen() {
       {/* ── Translation ── */}
       <Section title="Transcript Translation">
         <Text style={styles.infoText}>
-          Translates each caption after it's finalized. Shows translated text with the original below it in the Transcript tab. Requires internet connection.
+          Translates captions using DeepL. Automatically falls back to LibreTranslate if needed. Requires internet connection.
         </Text>
 
         <Row label="Enable translation">
@@ -651,6 +651,30 @@ const styles = StyleSheet.create({
     fontSize: 12,
     marginTop: 8,
     fontStyle: 'italic',
+  },
+  apiKeyRow: {
+    paddingVertical: 10,
+    paddingHorizontal: 16,
+    gap: 6,
+  },
+  apiKeyLabel: {
+    color: '#999',
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  apiKeyInput: {
+    backgroundColor: '#1A1A1A',
+    color: '#FFF',
+    fontSize: 14,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#333',
+  },
+  apiKeyHint: {
+    color: '#666',
+    fontSize: 11,
   },
   modelList: {
     gap: 8,

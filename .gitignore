@@ -12,3 +12,6 @@ web-build/
 .env.*
 ios/
 android/
+
+# API secrets
+src/config/secrets.ts

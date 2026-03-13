@@ -3,25 +3,27 @@
 //
 // Renders a small camera preview (PiP style) and runs frame processors for:
 //   1. Face detection → SpeakerService (lip-sync correlation)
-//   2. Hand landmarks → SignLanguageService (ASL/BSL recognition) [future]
+//   2. Hand landmarks → SignLanguageService (ASL/BSL recognition)
 //
 // Requires native build (expo prebuild) with:
 //   - react-native-vision-camera
 //   - react-native-vision-camera-face-detector
 //   - react-native-worklets-core
+//   - MediaPipeTasksVision (hand_landmarker.task bundled in iOS)
 // ============================================================================
 
-import React, { useCallback, useEffect, useRef } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { View, Text, StyleSheet } from 'react-native';
 import type { CameraPosition } from '../types';
 import { getSpeakerService } from '../services/speakerService';
+import { getSignLanguageService } from '../services/signLanguageService';
 
 let Camera: any = null;
 let useCameraDevice: any = null;
 let useCameraPermission: any = null;
 let useFrameProcessor: any = null;
 let detectFaces: any = null;
-let Worklets: any = null;
+let WorkletsAPI: any = null;
 
 // Load native modules — fail gracefully if not available
 let _nativeAvailable = false;
@@ -35,16 +37,35 @@ try {
   const fd = require('react-native-vision-camera-face-detector');
   detectFaces = fd.detectFaces;
 
-  Worklets = require('react-native-worklets-core');
+  const wm = require('react-native-worklets-core');
+  WorkletsAPI = wm.Worklets;
   _nativeAvailable = true;
 } catch {
   console.warn('[CameraFaceDetector] Native vision modules not available');
+}
+
+// Get hand landmark plugin handle — used directly in frame processor worklet
+let _handPlugin: any = null;
+let _handPluginStatus = 'not-init';
+try {
+  const vc = require('react-native-vision-camera');
+  if (vc.VisionCameraProxy) {
+    _handPlugin = vc.VisionCameraProxy.initFrameProcessorPlugin('detectHandLandmarks', {});
+    _handPluginStatus = _handPlugin ? 'LOADED' : 'NULL-plugin';
+    console.log(`[CameraFD] Hand landmark plugin: ${_handPluginStatus}`);
+  } else {
+    _handPluginStatus = 'no-proxy';
+  }
+} catch (e: any) {
+  _handPluginStatus = `ERR:${e?.message?.slice(0, 30) || 'unknown'}`;
+  console.warn('[CameraFD] Hand landmark plugin load failed:', e);
 }
 
 interface CameraFaceDetectorProps {
   cameraPosition: CameraPosition;
   isActive: boolean;
   showPreview?: boolean;
+  signLanguageEnabled?: boolean;
 }
 
 // Placeholder for when native modules aren't available
@@ -58,10 +79,22 @@ function PlaceholderCamera({ showPreview }: { showPreview: boolean }) {
 }
 
 // Real camera implementation
-function RealCamera({ cameraPosition, isActive, showPreview = true }: CameraFaceDetectorProps) {
+function RealCamera({ cameraPosition, isActive, showPreview = true, signLanguageEnabled = false }: CameraFaceDetectorProps) {
   const device = useCameraDevice(cameraPosition === 'front' ? 'front' : 'back');
   const { hasPermission, requestPermission } = useCameraPermission();
   const speakerService = useRef(getSpeakerService());
+  const signLanguageService = useRef(getSignLanguageService());
+  const [handDebug, setHandDebug] = useState<string>('init');
+
+  // Verify overlay renders — set a timestamp every 2s
+  useEffect(() => {
+    const t = setInterval(() => {
+      setHandDebug(prev => prev.startsWith('init') || prev.startsWith('waiting')
+        ? `waiting...${Date.now() % 10000}`
+        : prev);
+    }, 2000);
+    return () => clearInterval(t);
+  }, []);
 
   useEffect(() => {
     if (!hasPermission) {
@@ -69,18 +102,36 @@ function RealCamera({ cameraPosition, isActive, showPreview = true }: CameraFace
     }
   }, [hasPermission, requestPermission]);
 
-  // Bridge function to call speakerService from worklet thread
-  const processFacesJS = Worklets.createRunOnJS((facesJSON: string) => {
+  // Bridge functions to call services from worklet thread (must be memoized)
+  const processFacesJS = useMemo(() => WorkletsAPI.createRunOnJS((facesJSON: string) => {
     try {
       const faces = JSON.parse(facesJSON);
       speakerService.current.processFaces(faces);
     } catch {
       // Parse error — skip frame
     }
-  });
+  }), []);
+
+  const processHandsJS = useMemo(() => WorkletsAPI.createRunOnJS((handsJSON: string) => {
+    try {
+      // Debug messages from worklet start with "DBG:"
+      if (handsJSON.startsWith('DBG:')) {
+        setHandDebug(handsJSON.slice(4));
+        return;
+      }
+      const hands = JSON.parse(handsJSON);
+      const ptCount = hands[0]?.points?.length || 0;
+      setHandDebug(`H:${hands.length} P:${ptCount}`);
+      signLanguageService.current.processHandLandmarks(hands);
+    } catch (e) {
+      setHandDebug(`PARSE-ERR`);
+      console.warn('[CameraFD] Hand parse error:', e);
+    }
+  }), []);
 
   const frameProcessor = useFrameProcessor((frame: any) => {
     'worklet';
+    // Face detection — independent try block
     try {
       const faces = detectFaces(frame, {
         performanceMode: 'fast',
@@ -91,7 +142,6 @@ function RealCamera({ cameraPosition, isActive, showPreview = true }: CameraFace
       });
 
       if (faces && faces.length > 0) {
-        // Serialize for JS thread — worklet can't pass complex objects directly
         const simplified = faces.map((f: any) => ({
           bounds: f.bounds || { x: 0, y: 0, width: 0, height: 0 },
           trackingId: f.trackingId ?? -1,
@@ -105,9 +155,26 @@ function RealCamera({ cameraPosition, isActive, showPreview = true }: CameraFace
         processFacesJS(JSON.stringify(simplified));
       }
     } catch {
-      // Frame processor error — skip frame
+      // Face detection error — skip
     }
-  }, [processFacesJS]);
+
+    // Hand landmark detection — separate try block
+    try {
+      if (_handPlugin != null) {
+        // @ts-ignore — plugin.call() returns native result
+        const hands = _handPlugin.call(frame);
+        if (hands && Array.isArray(hands) && hands.length > 0) {
+          processHandsJS(JSON.stringify(hands));
+        } else {
+          processHandsJS('DBG:no-hands');
+        }
+      } else {
+        processHandsJS('DBG:no-plugin');
+      }
+    } catch (e: any) {
+      processHandsJS('DBG:ERR:' + (e?.message || '?').substring(0, 40));
+    }
+  }, [processFacesJS, processHandsJS]);
 
   if (!isActive || !showPreview) return null;
   if (!hasPermission) {
@@ -135,9 +202,17 @@ function RealCamera({ cameraPosition, isActive, showPreview = true }: CameraFace
         fps={15}
         pixelFormat="yuv"
       />
-      {/* Speaking indicator overlay */}
+      {/* Speaking/signing indicator overlay */}
       <View style={styles.overlay}>
         <SpeakingIndicator />
+        {signLanguageEnabled && (
+          <View style={styles.signBadge}>
+            <Text style={styles.signBadgeText}>ASL [{_handPluginStatus}]</Text>
+          </View>
+        )}
+        <View style={styles.signBadge}>
+          <Text style={styles.signBadgeText}>{handDebug}</Text>
+        </View>
       </View>
     </View>
   );
@@ -193,6 +268,7 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
     padding: 4,
+    gap: 2,
   },
   speakingBadge: {
     flexDirection: 'row',
@@ -213,5 +289,17 @@ const styles = StyleSheet.create({
     fontSize: 9,
     fontWeight: '600',
     flex: 1,
+  },
+  signBadge: {
+    alignSelf: 'flex-start',
+    backgroundColor: 'rgba(79, 195, 247, 0.3)',
+    borderRadius: 4,
+    paddingHorizontal: 5,
+    paddingVertical: 1,
+  },
+  signBadgeText: {
+    color: '#4FC3F7',
+    fontSize: 8,
+    fontWeight: '700',
   },
 });
