@@ -4,6 +4,9 @@
 //   - Single pulse when someone starts speaking
 //   - Double pulse when speech ends
 //   - Triple pulse on speaker change
+//   - Two short + one long on question marks
+//   - Three rapid on exclamation marks
+//   - Gentle double on ellipsis/pauses
 // ============================================================================
 
 import * as Haptics from 'expo-haptics';
@@ -22,9 +25,12 @@ export class VibrationService {
   private _lastVibrationMs = 0;
   private _wasSpeaking = false;
   private _lastSpeakerId: string | null = null;
+  private _lastPunctuationMs = 0;
 
   /** Silence threshold in dB — below this = silence */
   private readonly SPEECH_THRESHOLD_DB = -40;
+  /** Minimum time between punctuation vibrations (separate from main debounce) */
+  private readonly PUNCTUATION_DEBOUNCE_MS = 1500;
 
   configure(config: Partial<VibrationConfig>): void {
     this._config = { ...this._config, ...config };
@@ -66,11 +72,39 @@ export class VibrationService {
     this._triggerSpeakerChange();
   }
 
+  /**
+   * Called when a final segment is emitted — analyzes punctuation for
+   * vibration grammar (questions, exclamations, pauses).
+   */
+  onSegmentText(text: string): void {
+    if (this._config.intensity === 'off') return;
+    if (!text) return;
+
+    const trimmed = text.trim();
+    if (!trimmed) return;
+
+    // Check punctuation debounce separately from main debounce
+    const now = Date.now();
+    if (now - this._lastPunctuationMs < this.PUNCTUATION_DEBOUNCE_MS) return;
+
+    if (this._config.onQuestion && trimmed.endsWith('?')) {
+      this._lastPunctuationMs = now;
+      this._triggerQuestion();
+    } else if (this._config.onExclamation && trimmed.endsWith('!')) {
+      this._lastPunctuationMs = now;
+      this._triggerExclamation();
+    } else if (this._config.onPause && (trimmed.endsWith('...') || trimmed.endsWith('…'))) {
+      this._lastPunctuationMs = now;
+      this._triggerPause();
+    }
+  }
+
   /** Reset state (e.g., when session ends) */
   reset(): void {
     this._wasSpeaking = false;
     this._lastSpeakerId = null;
     this._lastVibrationMs = 0;
+    this._lastPunctuationMs = 0;
   }
 
   // ── Private ─────────────────────────────────────────────────────────────
@@ -107,6 +141,33 @@ export class VibrationService {
     await Haptics.impactAsync(style);
     await sleep(80);
     await Haptics.impactAsync(style);
+  }
+
+  /** Two short + one long — question detected */
+  private async _triggerQuestion(): Promise<void> {
+    const style = INTENSITY_MAP[this._config.intensity];
+    await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    await sleep(60);
+    await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    await sleep(120);
+    await Haptics.impactAsync(style);
+  }
+
+  /** Three rapid pulses — exclamation detected */
+  private async _triggerExclamation(): Promise<void> {
+    const style = INTENSITY_MAP[this._config.intensity];
+    await Haptics.impactAsync(style);
+    await sleep(50);
+    await Haptics.impactAsync(style);
+    await sleep(50);
+    await Haptics.impactAsync(style);
+  }
+
+  /** Gentle double pulse — pause/ellipsis detected */
+  private async _triggerPause(): Promise<void> {
+    await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    await sleep(200);
+    await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
   }
 }
 

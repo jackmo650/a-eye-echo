@@ -72,6 +72,10 @@ export default function LiveScreen() {
   const [downloadProgress, setDownloadProgress] = useState(0);
   const [isDownloading, setIsDownloading] = useState(false);
   const [sourceMode, setSourceMode] = useState<AudioSourceMode>('microphone');
+  const [showRewind, setShowRewind] = useState(false);
+  const [speechPace, setSpeechPace] = useState<'slow' | 'normal' | 'fast'>('normal');
+  const lastPartialTimeRef = useRef(Date.now());
+  const wordCountRef = useRef(0);
   // systemAudioActive state removed — system audio deferred
 
   const serviceRef = useRef<TranscriptionService | null>(null);
@@ -141,6 +145,11 @@ export default function LiveScreen() {
         }
       }
 
+      // Vibration grammar — detect punctuation patterns in final segments
+      if (segment.isFinal) {
+        vibration.onSegmentText(segment.text);
+      }
+
       addSegment(segment);
 
       // Auto-save segment to database
@@ -166,9 +175,25 @@ export default function LiveScreen() {
       }
     });
 
-    // Register partial result callback for live streaming captions
+    // Register partial result callback for live streaming captions + pace tracking
     service.onPartialResult((text) => {
       setCurrentText(text);
+
+      // Track speech pace (words per minute) from partial updates
+      const now = Date.now();
+      const words = text.trim().split(/\s+/).length;
+      const elapsed = (now - lastPartialTimeRef.current) / 1000; // seconds
+
+      if (elapsed > 0.5 && words > wordCountRef.current) {
+        const newWords = words - wordCountRef.current;
+        const wpm = (newWords / elapsed) * 60;
+        if (wpm < 80) setSpeechPace('slow');
+        else if (wpm > 180) setSpeechPace('fast');
+        else setSpeechPace('normal');
+      }
+
+      wordCountRef.current = words;
+      lastPartialTimeRef.current = now;
     });
 
     // Start camera-based speaker detection if enabled
@@ -216,6 +241,8 @@ export default function LiveScreen() {
     speakerService.stop();
     getSignLanguageService().stop();
     setAudioLevel(-Infinity);
+    setShowRewind(false);
+    setSpeechPace('normal');
     getVibrationService().reset();
 
     // Save session to database
@@ -250,6 +277,15 @@ export default function LiveScreen() {
 
   // Audio level indicator width (0-100%)
   const levelWidth = Math.max(0, Math.min(100, ((audioLevel + 60) / 60) * 100));
+
+  // Speech intensity classification for visual indicator
+  const getSpeechIntensity = (): { label: string; color: string; bgColor: string } => {
+    if (audioLevel <= -50) return { label: 'Silent', color: '#555', bgColor: '#1A1A1A' };
+    if (audioLevel <= -35) return { label: 'Quiet', color: '#81C784', bgColor: '#1A2E1A' };
+    if (audioLevel <= -20) return { label: 'Normal', color: '#4FC3F7', bgColor: '#1A2A3A' };
+    return { label: 'Loud', color: '#E53935', bgColor: '#3A1A1A' };
+  };
+  const intensity = isActive ? getSpeechIntensity() : null;
 
   return (
     <View style={styles.container}>
@@ -317,6 +353,24 @@ export default function LiveScreen() {
         </View>
       )}
 
+      {/* Rewind overlay — last 5 seconds of segments */}
+      {showRewind && isActive && sourceMode !== 'url' && (
+        <View style={styles.rewindOverlay}>
+          <Text style={styles.rewindTitle}>Last 5 seconds</Text>
+          {segments
+            .filter(s => s.endMs >= (segments.length > 0 ? segments[segments.length - 1].endMs : 0) - 5000)
+            .slice(-5)
+            .map(seg => (
+              <Text key={seg.id} style={styles.rewindSegText}>
+                {seg.translatedText || seg.text}
+              </Text>
+            ))}
+          {segments.filter(s => s.endMs >= (segments.length > 0 ? segments[segments.length - 1].endMs : 0) - 5000).length === 0 && (
+            <Text style={styles.rewindEmpty}>No recent captions</Text>
+          )}
+        </View>
+      )}
+
       {/* Caption display area — pinch to zoom (hidden in URL mode) */}
       {sourceMode !== 'url' && (
       <GestureDetector gesture={pinchGesture}>
@@ -332,7 +386,14 @@ export default function LiveScreen() {
             <Text
               style={[
                 styles.liveCaptionText,
-                { fontSize: settings.caption.fontSize },
+                {
+                  fontSize: speechPace === 'fast'
+                    ? settings.caption.fontSize * 0.85
+                    : speechPace === 'slow'
+                    ? settings.caption.fontSize * 1.1
+                    : settings.caption.fontSize,
+                  letterSpacing: speechPace === 'fast' ? -0.5 : speechPace === 'slow' ? 1 : 0,
+                },
                 currentSpeaker?.color ? { color: currentSpeaker.color } : null,
               ]}
               numberOfLines={settings.caption.maxLines}
@@ -342,6 +403,11 @@ export default function LiveScreen() {
             >
               {currentText}
             </Text>
+            {speechPace !== 'normal' && (
+              <Text style={[styles.paceIndicator, { color: speechPace === 'fast' ? '#FFB74D' : '#81C784' }]}>
+                {speechPace === 'fast' ? 'Fast speech' : 'Slow / emphatic'}
+              </Text>
+            )}
             {settings.translation.enabled && latestSegment?.translatedText && latestSegment.translatedText !== latestSegment.text && (
               <Text style={[styles.liveOriginalText, { fontSize: settings.caption.fontSize * 0.45 }]}>
                 {latestSegment.text}
@@ -414,18 +480,34 @@ export default function LiveScreen() {
 
       {/* Bottom controls */}
       <View style={styles.controls}>
-        {/* Audio level bar */}
-        {isActive && (
-          <View style={styles.levelContainer}>
-            <View style={[styles.levelBar, { width: `${levelWidth}%` }]} />
+        {/* Speech intensity indicator */}
+        {isActive && intensity && (
+          <View style={[styles.intensityContainer, { backgroundColor: intensity.bgColor }]}>
+            <View style={[styles.levelBar, { width: `${levelWidth}%`, backgroundColor: intensity.color }]} />
+            <Text style={[styles.intensityLabel, { color: intensity.color }]}>
+              {intensity.label}
+            </Text>
           </View>
         )}
 
-        {/* Speaker indicator */}
-        {isActive && currentSpeaker && (
-          <Text style={[styles.speakerIndicator, { color: currentSpeaker.color }]}>
-            {currentSpeaker.label} speaking
-          </Text>
+        {/* Speaker indicator + Rewind button */}
+        {isActive && (
+          <View style={styles.indicatorRow}>
+            {currentSpeaker && (
+              <Text style={[styles.speakerIndicator, { color: currentSpeaker.color }]}>
+                {currentSpeaker.label} speaking
+              </Text>
+            )}
+            <TouchableOpacity
+              style={[styles.rewindBtn, showRewind && styles.rewindBtnActive]}
+              onPress={() => setShowRewind(v => !v)}
+              accessibilityLabel="Show last 5 seconds"
+            >
+              <Text style={[styles.rewindBtnText, showRewind && styles.rewindBtnTextActive]}>
+                Rewind
+              </Text>
+            </TouchableOpacity>
+          </View>
         )}
 
         {/* Start/Stop button — always visible, transcribes via mic in all modes */}
@@ -497,6 +579,12 @@ const styles = StyleSheet.create({
     fontStyle: 'italic',
     textAlign: 'center',
     marginTop: 8,
+  },
+  paceIndicator: {
+    fontSize: 11,
+    fontWeight: '600',
+    opacity: 0.7,
+    marginTop: 4,
   },
   liveOriginalText: {
     color: '#4FC3F7',
@@ -590,21 +678,89 @@ const styles = StyleSheet.create({
     gap: 4,
     backgroundColor: '#0A0A0A',
   },
-  levelContainer: {
+  intensityContainer: {
     width: '100%',
-    height: 4,
-    backgroundColor: '#222',
-    borderRadius: 2,
+    height: 20,
+    borderRadius: 6,
     overflow: 'hidden',
+    flexDirection: 'row',
+    alignItems: 'center',
   },
   levelBar: {
+    position: 'absolute',
+    left: 0,
+    top: 0,
     height: '100%',
-    backgroundColor: '#4FC3F7',
-    borderRadius: 2,
+    borderRadius: 6,
+    opacity: 0.3,
+  },
+  intensityLabel: {
+    fontSize: 11,
+    fontWeight: '700',
+    letterSpacing: 1,
+    textAlign: 'center',
+    width: '100%',
+  },
+  indicatorRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    width: '100%',
   },
   speakerIndicator: {
     fontSize: 13,
     fontWeight: '600',
+  },
+  rewindBtn: {
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 12,
+    backgroundColor: '#1A1A1A',
+    borderWidth: 1,
+    borderColor: '#333',
+  },
+  rewindBtnActive: {
+    backgroundColor: '#1A3040',
+    borderColor: '#4FC3F7',
+  },
+  rewindBtnText: {
+    color: '#666',
+    fontSize: 11,
+    fontWeight: '600',
+  },
+  rewindBtnTextActive: {
+    color: '#4FC3F7',
+  },
+  rewindOverlay: {
+    position: 'absolute',
+    top: 60,
+    left: 16,
+    right: 16,
+    backgroundColor: 'rgba(10, 10, 20, 0.95)',
+    borderRadius: 12,
+    padding: 14,
+    zIndex: 10,
+    borderWidth: 1,
+    borderColor: '#4FC3F7',
+    gap: 6,
+  },
+  rewindTitle: {
+    color: '#4FC3F7',
+    fontSize: 12,
+    fontWeight: '700',
+    letterSpacing: 1,
+    textTransform: 'uppercase',
+    marginBottom: 4,
+  },
+  rewindSegText: {
+    color: '#DDD',
+    fontSize: 15,
+    lineHeight: 20,
+  },
+  rewindEmpty: {
+    color: '#555',
+    fontSize: 13,
+    fontStyle: 'italic',
   },
   mainButton: {
     width: 56,

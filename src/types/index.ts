@@ -170,6 +170,12 @@ export interface VibrationConfig {
   onSpeechEnd: boolean;
   /** Vibrate on speaker change (triple pulse) */
   onSpeakerChange: boolean;
+  /** Vibrate on question marks (two short, one long) */
+  onQuestion: boolean;
+  /** Vibrate on exclamation marks (three rapid) */
+  onExclamation: boolean;
+  /** Vibrate on ellipsis/long pauses (gentle fade) */
+  onPause: boolean;
   /** Haptic intensity */
   intensity: VibrationIntensity;
   /** Minimum time between vibrations (ms) to avoid fatigue */

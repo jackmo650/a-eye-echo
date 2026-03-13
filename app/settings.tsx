@@ -457,6 +457,39 @@ export default function SettingsScreen() {
             trackColor={{ true: '#4FC3F7', false: '#333' }}
           />
         </Row>
+
+        <Text style={[styles.sectionTitle, { marginTop: 16, fontSize: 12 }]}>
+          Punctuation Patterns
+        </Text>
+
+        <Row label="Vibrate on questions (?)">
+          <Switch
+            value={vibration.onQuestion}
+            onValueChange={(v) => updateVibrationConfig({ onQuestion: v })}
+            trackColor={{ true: '#4FC3F7', false: '#333' }}
+          />
+        </Row>
+
+        <Row label="Vibrate on exclamations (!)">
+          <Switch
+            value={vibration.onExclamation}
+            onValueChange={(v) => updateVibrationConfig({ onExclamation: v })}
+            trackColor={{ true: '#4FC3F7', false: '#333' }}
+          />
+        </Row>
+
+        <Row label="Vibrate on pauses (...)">
+          <Switch
+            value={vibration.onPause}
+            onValueChange={(v) => updateVibrationConfig({ onPause: v })}
+            trackColor={{ true: '#4FC3F7', false: '#333' }}
+          />
+        </Row>
+
+        <Text style={styles.infoText}>
+          Different vibration patterns help convey tone: questions get two short + one long pulse,
+          exclamations get three rapid pulses, pauses get a gentle double pulse.
+        </Text>
       </Section>
 
       {/* ── Camera ── */}
