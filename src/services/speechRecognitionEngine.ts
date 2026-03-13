@@ -1,12 +1,15 @@
 // ============================================================================
 // Speech Recognition Engine — expo-speech-recognition wrapper
 //
-// Wraps Apple's SFSpeechRecognizer via expo-speech-recognition for continuous
-// streaming transcription. Auto-restarts every ~55s to handle the 60-second
-// session limit. Uses a generation counter to discard stale results.
+// Cross-platform: wraps Apple SFSpeechRecognizer on iOS and Google
+// SpeechRecognizer on Android. Auto-restarts on iOS every ~55s to handle
+// the 60-second session limit. On Android, relies on the onEnd handler
+// to restart when Google's recognizer stops (typically on silence).
+// Uses a generation counter to discard stale results.
 // ============================================================================
 
 import { ExpoSpeechRecognitionModule } from 'expo-speech-recognition';
+import { Platform } from 'react-native';
 import { Audio, InterruptionModeIOS } from 'expo-av';
 import type { WhisperLanguage } from '../types';
 
@@ -25,8 +28,11 @@ const LANGUAGE_MAP: Record<string, string> = {
   id: 'id-ID', ms: 'ms-MY', ro: 'ro-RO', cs: 'cs-CZ', hu: 'hu-HU',
 };
 
-// Auto-restart interval (55s, before Apple's ~60s limit)
-const SESSION_RESTART_MS = 55_000;
+// Auto-restart interval — iOS has a hard ~60s session limit.
+// Android's Google SpeechRecognizer stops on silence instead, so we use a
+// much longer safety timer (5 min) as a fallback. The onEnd handler
+// auto-restarts on both platforms regardless.
+const SESSION_RESTART_MS = Platform.OS === 'ios' ? 55_000 : 300_000;
 
 export class SpeechRecognitionEngine {
   private _active = false;
@@ -88,14 +94,18 @@ export class SpeechRecognitionEngine {
       throw new Error('Speech recognition permissions not granted');
     }
 
-    // Configure audio session ONCE via expo-av — this persists across
-    // speech recognition restarts and prevents WebView media interruption
-    await Audio.setAudioModeAsync({
-      allowsRecordingIOS: true,
-      playsInSilentModeIOS: true,
-      staysActiveInBackground: false,
-      interruptionModeIOS: InterruptionModeIOS.MixWithOthers,
-    });
+    // Configure audio session ONCE via expo-av — iOS-specific options
+    // persist across speech recognition restarts and prevent WebView
+    // media interruption. On Android, expo-av ignores iOS-specific keys
+    // but we still call it for staysActiveInBackground.
+    if (Platform.OS === 'ios') {
+      await Audio.setAudioModeAsync({
+        allowsRecordingIOS: true,
+        playsInSilentModeIOS: true,
+        staysActiveInBackground: false,
+        interruptionModeIOS: InterruptionModeIOS.MixWithOthers,
+      });
+    }
 
     this._language = SpeechRecognitionEngine.mapLanguage(language);
     this._active = true;
@@ -160,17 +170,18 @@ export class SpeechRecognitionEngine {
         continuous: true,
         requiresOnDeviceRecognition: SpeechRecognitionEngine.supportsOnDevice(),
         addsPunctuation: true,
-        iosTaskHint: 'dictation',
-        // ALWAYS pass iosCategory with mixWithOthers so that every session
-        // start (including restarts) keeps the audio session in mix mode.
-        // Without this, expo-speech-recognition uses a default config that
-        // interrupts WebView media playback.
-        iosCategory: {
+      };
+
+      // iOS-specific: audio session configuration to prevent WebView
+      // media interruption. Android handles audio focus differently.
+      if (Platform.OS === 'ios') {
+        opts.iosTaskHint = 'dictation';
+        opts.iosCategory = {
           category: 'playAndRecord',
           categoryOptions: ['mixWithOthers', 'allowBluetooth', 'defaultToSpeaker'],
           mode: 'default',
-        },
-      };
+        };
+      }
 
       ExpoSpeechRecognitionModule.start(opts);
     } catch (err) {

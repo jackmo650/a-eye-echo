@@ -17,6 +17,7 @@ import {
   TouchableOpacity,
   StyleSheet,
   Linking,
+  Platform,
 } from 'react-native';
 import { WebView } from 'react-native-webview';
 import * as ExpoClipboard from 'expo-clipboard';
@@ -39,8 +40,10 @@ const URL_TYPE_LABELS: Record<UrlType, string> = {
   unknown: 'URL',
 };
 
-// Mobile browser user agent — YouTube allows playback from mobile Safari
-const MOBILE_USER_AGENT = 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1';
+// Mobile browser user agents — platform-specific for best compatibility
+const IOS_USER_AGENT = 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1';
+const ANDROID_USER_AGENT = 'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Mobile Safari/537.36';
+const MOBILE_USER_AGENT = Platform.OS === 'ios' ? IOS_USER_AGENT : ANDROID_USER_AGENT;
 
 // Extract YouTube video ID from various URL formats
 function extractYouTubeId(url: string): string | null {
