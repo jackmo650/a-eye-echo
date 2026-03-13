@@ -146,6 +146,10 @@ export async function startCapture(): Promise<void> {
     throw new Error('Microphone permission denied');
   }
 
+  if (!LiveAudioStream) {
+    console.warn('[AudioCapture] Native module not available, skipping start');
+    return;
+  }
   LiveAudioStream.start();
   _capturing = true;
   console.log('[AudioCapture] Started');
@@ -157,7 +161,9 @@ export async function startCapture(): Promise<void> {
 export function stopCapture(): void {
   if (!_capturing) return;
 
-  LiveAudioStream.stop();
+  if (LiveAudioStream) {
+    LiveAudioStream.stop();
+  }
   _capturing = false;
   console.log('[AudioCapture] Stopped');
 }

@@ -71,17 +71,19 @@ export default function SettingsScreen() {
   // Filter models: show English-only for English, multilingual otherwise
   const isNonEnglish = transcription.language !== 'en';
   const filteredModels = (Object.keys(WHISPER_MODELS) as WhisperModel[]).filter(id => {
-    if (isNonEnglish || transcription.autoDetectLanguage) {
+    if (isNonEnglish) {
       return !id.endsWith('.en'); // Only show multilingual
     }
     return id.endsWith('.en'); // Only show English
   });
 
-  // Filter languages for search
+  // Filter languages for search (exclude 'auto' — not supported by Apple Speech Recognition)
   const filteredLanguages = WHISPER_LANGUAGES.filter(l =>
-    l.label.toLowerCase().includes(languageSearch.toLowerCase()) ||
-    l.nativeName.toLowerCase().includes(languageSearch.toLowerCase()) ||
-    l.code.includes(languageSearch.toLowerCase()),
+    l.code !== 'auto' && (
+      l.label.toLowerCase().includes(languageSearch.toLowerCase()) ||
+      l.nativeName.toLowerCase().includes(languageSearch.toLowerCase()) ||
+      l.code.includes(languageSearch.toLowerCase())
+    ),
   );
 
   return (
@@ -223,23 +225,13 @@ export default function SettingsScreen() {
 
       {/* ── Language ── */}
       <Section title="Language">
-        <Row label="Auto-detect language">
-          <Switch
-            value={transcription.autoDetectLanguage}
-            onValueChange={(v) => updateTranscriptionConfig({ autoDetectLanguage: v })}
-            trackColor={{ true: '#4FC3F7', false: '#333' }}
-          />
-        </Row>
-
-        {!transcription.autoDetectLanguage && (
-          <>
-            <TextInput
-              style={styles.searchInput}
-              placeholder="Search languages..."
-              placeholderTextColor="#555"
-              value={languageSearch}
-              onChangeText={setLanguageSearch}
-            />
+        <TextInput
+          style={styles.searchInput}
+          placeholder="Search languages..."
+          placeholderTextColor="#555"
+          value={languageSearch}
+          onChangeText={setLanguageSearch}
+        />
             <View style={styles.languageGrid}>
               {filteredLanguages.map(lang => (
                 <TouchableOpacity
@@ -265,13 +257,15 @@ export default function SettingsScreen() {
                 </TouchableOpacity>
               ))}
             </View>
-          </>
-        )}
       </Section>
 
       {/* ── Translation ── */}
-      <Section title="Translation">
-        <Row label="Enable auto-translation">
+      <Section title="Transcript Translation">
+        <Text style={styles.infoText}>
+          Translates each caption after it's finalized. Shows translated text with the original below it in the Transcript tab. Requires internet connection.
+        </Text>
+
+        <Row label="Enable translation">
           <Switch
             value={translation.enabled}
             onValueChange={(v) => updateTranslationConfig({ enabled: v })}
@@ -313,10 +307,6 @@ export default function SettingsScreen() {
                 ))}
               </View>
             </Row>
-
-            <Text style={styles.infoText}>
-              Translation models (~30MB each) download on first use.
-            </Text>
           </>
         )}
       </Section>

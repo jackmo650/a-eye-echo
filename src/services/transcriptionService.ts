@@ -108,7 +108,8 @@ export class TranscriptionService {
     this._setStatus('loading-model');
 
     try {
-      const language: WhisperLanguage = this._config.autoDetectLanguage ? 'auto' : this._config.language;
+      // SFSpeechRecognizer doesn't support auto-detect — always use explicit language
+      const language: WhisperLanguage = this._config.language || 'en';
 
       // Check availability
       if (!SpeechRecognitionEngine.isAvailable()) {
@@ -162,7 +163,7 @@ export class TranscriptionService {
 
   async resume(): Promise<void> {
     if (this._status !== 'paused') return;
-    const language: WhisperLanguage = this._config.autoDetectLanguage ? 'auto' : this._config.language;
+    const language: WhisperLanguage = this._config.language || 'en';
 
     try {
       await AudioCapture.startCapture();
@@ -320,7 +321,12 @@ export class TranscriptionService {
     };
 
     if (this._translationConfig.enabled) {
-      this._translateAndEmit(segment, cleanText);
+      // Fire-and-forget but with guaranteed segment emission
+      this._translateAndEmit(segment, cleanText).catch(() => {
+        // Ensure segment is emitted even if translation throws unexpectedly
+        console.log(`[A.EYE.ECHO] → "${cleanText}" (translation failed)`);
+        for (const cb of this._transcriptCallbacks) cb(segment);
+      });
     } else {
       console.log(`[A.EYE.ECHO] → "${cleanText}"`);
       for (const cb of this._transcriptCallbacks) cb(segment);

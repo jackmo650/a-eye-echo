@@ -1,38 +1,10 @@
 // ============================================================================
-// Translation Service — On-device translation via ML Kit
+// Translation Service — Web-based translation via MyMemory API
 //
-// Uses @react-native-ml-kit/translate-text for offline translation.
-// Each language pair requires a ~30MB model download (one-time).
+// Uses the free MyMemory translation API (no API key, no native module).
+// Translates finalized transcript segments — shown as sub-rows in transcript.
 // Includes LRU cache to avoid re-translating repeated phrases.
 // ============================================================================
-
-// Note: @react-native-ml-kit/translate-text provides:
-//   translate(text, { sourceLanguage, targetLanguage })
-//   downloadModel(language)
-//   isModelDownloaded(language)
-//   deleteModel(language)
-
-let TranslateModule: {
-  translate: (text: string, options: { sourceLanguage: string; targetLanguage: string }) => Promise<string>;
-  downloadModel: (language: string) => Promise<void>;
-  isModelDownloaded: (language: string) => Promise<boolean>;
-  deleteModel: (language: string) => Promise<void>;
-} | null = null;
-
-// Lazy-load to avoid crash if module not installed
-async function getTranslateModule() {
-  if (!TranslateModule) {
-    try {
-      // @ts-expect-error — dynamic import for optional dependency
-      const mod = await import('@react-native-ml-kit/translate-text');
-      TranslateModule = mod.default || mod;
-    } catch {
-      console.warn('[Translation] @react-native-ml-kit/translate-text not available');
-      return null;
-    }
-  }
-  return TranslateModule;
-}
 
 // ── LRU Translation Cache ───────────────────────────────────────────────────
 
@@ -68,11 +40,11 @@ class TranslationCache {
 
 export class TranslationService {
   private _cache = new TranslationCache();
-  private _downloadedModels = new Set<string>();
 
   /**
-   * Translate text from source to target language.
-   * Returns original text if translation module unavailable.
+   * Translate text from source to target language using MyMemory API.
+   * Free tier: 5000 chars/day without key, 50000 with free key.
+   * Returns original text on any failure.
    */
   async translate(
     text: string,
@@ -80,90 +52,51 @@ export class TranslationService {
     targetLanguage: string,
   ): Promise<string> {
     if (sourceLanguage === targetLanguage) return text;
+    if (!text.trim()) return text;
 
     const cacheKey = `${sourceLanguage}:${targetLanguage}:${text}`;
     const cached = this._cache.get(cacheKey);
     if (cached) return cached;
 
-    const mod = await getTranslateModule();
-    if (!mod) return text;
-
     try {
-      const translated = await mod.translate(text, {
-        sourceLanguage: this._mapLanguageCode(sourceLanguage),
-        targetLanguage: this._mapLanguageCode(targetLanguage),
-      });
+      const langPair = `${sourceLanguage}|${targetLanguage}`;
+      const url = `https://api.mymemory.translated.net/get?q=${encodeURIComponent(text)}&langpair=${encodeURIComponent(langPair)}`;
 
-      this._cache.set(cacheKey, translated);
-      return translated;
-    } catch (err) {
-      console.error('[Translation] Failed:', err);
-      return text;
-    }
-  }
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 5000);
 
-  /**
-   * Ensure both source and target language models are downloaded.
-   * Call before starting translation to avoid delays during transcription.
-   */
-  async ensureLanguagePair(
-    sourceLanguage: string,
-    targetLanguage: string,
-  ): Promise<void> {
-    const mod = await getTranslateModule();
-    if (!mod) return;
+      const response = await fetch(url, { signal: controller.signal });
+      clearTimeout(timeout);
 
-    const source = this._mapLanguageCode(sourceLanguage);
-    const target = this._mapLanguageCode(targetLanguage);
-
-    for (const lang of [source, target]) {
-      if (this._downloadedModels.has(lang)) continue;
-
-      const downloaded = await mod.isModelDownloaded(lang);
-      if (downloaded) {
-        this._downloadedModels.add(lang);
-        continue;
+      if (!response.ok) {
+        console.warn(`[Translation] HTTP ${response.status}`);
+        return text;
       }
 
-      console.log(`[Translation] Downloading model for ${lang}...`);
-      await mod.downloadModel(lang);
-      this._downloadedModels.add(lang);
-      console.log(`[Translation] Model for ${lang} ready`);
+      const data = await response.json();
+      const translated = data?.responseData?.translatedText;
+
+      if (!translated || translated === text) {
+        return text;
+      }
+
+      // MyMemory returns uppercase "MYMEMORY WARNING" on limit — detect and skip
+      if (translated.includes('MYMEMORY WARNING') || translated.includes('PLEASE CONTACT')) {
+        console.warn('[Translation] MyMemory rate limit hit');
+        return text;
+      }
+
+      this._cache.set(cacheKey, translated);
+      console.log(`[Translation] ${sourceLanguage}→${targetLanguage}: "${text}" → "${translated}"`);
+      return translated;
+    } catch (err) {
+      if ((err as Error)?.name === 'AbortError') {
+        console.warn('[Translation] Request timed out');
+      } else {
+        console.error('[Translation] Failed:', err);
+      }
+      return text;
     }
-  }
-
-  /**
-   * Check if a language pair is ready for translation (models downloaded).
-   */
-  async isLanguagePairReady(
-    sourceLanguage: string,
-    targetLanguage: string,
-  ): Promise<boolean> {
-    const mod = await getTranslateModule();
-    if (!mod) return false;
-
-    const source = this._mapLanguageCode(sourceLanguage);
-    const target = this._mapLanguageCode(targetLanguage);
-
-    const [srcReady, tgtReady] = await Promise.all([
-      mod.isModelDownloaded(source),
-      mod.isModelDownloaded(target),
-    ]);
-
-    return srcReady && tgtReady;
-  }
-
-  /**
-   * Delete a translation language model to free storage.
-   */
-  async deleteLanguageModel(language: string): Promise<void> {
-    const mod = await getTranslateModule();
-    if (!mod) return;
-
-    const code = this._mapLanguageCode(language);
-    await mod.deleteModel(code);
-    this._downloadedModels.delete(code);
-    console.log(`[Translation] Deleted model for ${code}`);
   }
 
   /**
@@ -171,19 +104,6 @@ export class TranslationService {
    */
   clearCache(): void {
     this._cache.clear();
-  }
-
-  /**
-   * Map Whisper language codes to ML Kit language codes.
-   * Most are identical, but a few differ.
-   */
-  private _mapLanguageCode(code: string): string {
-    const mapping: Record<string, string> = {
-      'zh': 'zh',     // Chinese (ML Kit uses zh for Simplified)
-      'no': 'no',     // Norwegian
-      'he': 'he',     // Hebrew
-    };
-    return mapping[code] || code;
   }
 }
 

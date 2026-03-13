@@ -216,10 +216,11 @@ const styles = StyleSheet.create({
     lineHeight: 22,
   },
   originalText: {
-    color: '#777',
+    color: '#4FC3F7',
     fontSize: 13,
     lineHeight: 18,
     fontStyle: 'italic',
+    opacity: 0.7,
     marginTop: 2,
   },
   scrollToBottomButton: {

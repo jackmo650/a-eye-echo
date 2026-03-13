@@ -153,7 +153,7 @@ export default function LiveScreen() {
     });
 
     // Register segment update callback (same slice re-transcribed → update in place)
-    service.onSegmentUpdate((id, text, translatedText) => {
+    service.onSegmentUpdate((id: string, text: string, translatedText?: string) => {
       updateSegment(id, text, translatedText);
     });
 
@@ -302,9 +302,9 @@ export default function LiveScreen() {
             >
               {currentText}
             </Text>
-            {latestSegment?.translatedText && settings.translation.showOriginal && (
-              <Text style={[styles.liveTranslatedText, { fontSize: settings.caption.fontSize * 0.6 }]}>
-                {latestSegment.translatedText}
+            {settings.translation.enabled && latestSegment?.translatedText && latestSegment.translatedText !== latestSegment.text && (
+              <Text style={[styles.liveOriginalText, { fontSize: settings.caption.fontSize * 0.45 }]}>
+                {latestSegment.text}
               </Text>
             )}
           </View>
@@ -488,6 +488,13 @@ const styles = StyleSheet.create({
   liveTranslatedText: {
     color: '#FFFFFF',
     opacity: 0.6,
+    fontStyle: 'italic',
+    textAlign: 'center',
+    marginTop: 8,
+  },
+  liveOriginalText: {
+    color: '#4FC3F7',
+    opacity: 0.7,
     fontStyle: 'italic',
     textAlign: 'center',
     marginTop: 8,
