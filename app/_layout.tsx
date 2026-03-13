@@ -18,7 +18,6 @@ import {
   persistThemes,
   isOnboardingComplete,
   completeOnboarding,
-  resetOnboarding,
 } from '../src/services/settingsPersistence';
 
 function AppContent() {
@@ -35,8 +34,6 @@ function AppContent() {
       const { settings: loaded, themes: loadedThemes } = await loadPersistedSettings();
       loadSettings(loaded);
 
-      // Reset onboarding to show updated pages (remove after first launch)
-      await resetOnboarding();
       const onboarded = await isOnboardingComplete();
       if (!onboarded) {
         setShowOnboarding(true);
