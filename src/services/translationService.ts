@@ -6,15 +6,18 @@
 // Includes LRU cache to avoid re-translating repeated phrases.
 // ============================================================================
 
-// Try local secrets first, fall back to defaults for CI/EAS builds
-let DEEPL_API_KEY = '';
-try {
-  DEEPL_API_KEY = require('../config/secrets').DEEPL_API_KEY || '';
-} catch {
+import Constants from 'expo-constants';
+
+// API key resolution order:
+// 1. EAS Environment Variable (injected at build time via app.config.js)
+// 2. Local secrets.ts (gitignored, for development)
+// 3. Empty string (falls back to LibreTranslate)
+let DEEPL_API_KEY = Constants.expoConfig?.extra?.DEEPL_API_KEY || '';
+if (!DEEPL_API_KEY) {
   try {
-    DEEPL_API_KEY = require('../config/secrets.default').DEEPL_API_KEY || '';
+    DEEPL_API_KEY = require('../config/secrets').DEEPL_API_KEY || '';
   } catch {
-    // No secrets available — translation will use LibreTranslate fallback
+    // No local secrets — DeepL unavailable, LibreTranslate will be used
   }
 }
 
