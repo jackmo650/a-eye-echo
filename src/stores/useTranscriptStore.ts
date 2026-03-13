@@ -40,6 +40,7 @@ interface TranscriptState {
   endSession: () => void;
 
   addSegment: (segment: TranscriptSegment) => void;
+  updateSegment: (id: string, text: string, translatedText?: string) => void;
   setCurrentText: (text: string) => void;
 
   addOrUpdateSpeaker: (speakerId: string, updates?: Partial<Speaker>) => Speaker;
@@ -99,6 +100,16 @@ export const useTranscriptStore = create<TranscriptState>((set, get) => ({
       ? { ...state.currentSession, segmentCount: state.segments.length + 1 }
       : null,
   })),
+
+  updateSegment: (id, text, translatedText) => set(state => {
+    const segments = state.segments.map(s =>
+      s.id === id ? { ...s, text, ...(translatedText !== undefined ? { translatedText } : {}) } : s,
+    );
+    return {
+      segments,
+      currentText: translatedText || text,
+    };
+  }),
 
   setCurrentText: (text) => set({ currentText: text }),
 

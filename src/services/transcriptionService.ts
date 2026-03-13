@@ -1,15 +1,11 @@
 // ============================================================================
-// Transcription Service — Audio capture → Whisper → translate → transcript
-// Phase 3: Multi-language + auto-translation pipeline
+// Transcription Service — Streaming via expo-speech-recognition
 //
-// Pipeline:
-//   audioCapture (16kHz PCM) → accumulate chunks → pcmToWav
-//   → whisperEngine.transcribe(language) → filterHallucinations
-//   → translationService.translate (if enabled)
-//   → emit TranscriptSegment → UI
+// Uses Apple's SFSpeechRecognizer for continuous streaming transcription.
+// No model downloads, no WAV files, no setTimeout chains.
+// AudioCapture kept for amplitude metering only.
 // ============================================================================
 
-import * as FileSystem from 'expo-file-system';
 import type {
   TranscriptionStatus,
   TranscriptionConfig,
@@ -18,24 +14,22 @@ import type {
   WhisperLanguage,
 } from '../types';
 import { DEFAULT_TRANSCRIPTION_CONFIG, DEFAULT_TRANSLATION_CONFIG } from '../types/defaults';
-import * as WhisperEngine from './whisperEngine';
+import { SpeechRecognitionEngine, getSpeechRecognitionEngine } from './speechRecognitionEngine';
 import * as AudioCapture from './audioCapture';
-import { onSystemAudioData } from './systemAudioCapture';
 import { getTranslationService } from './translationService';
 
 type TranscriptCallback = (segment: TranscriptSegment) => void;
 type StatusCallback = (status: TranscriptionStatus) => void;
 type AmplitudeCallback = (rmsDb: number) => void;
+type PartialCallback = (text: string) => void;
 
 let _nextSegmentId = 1;
 function nextId(): string {
   return `seg_${_nextSegmentId++}`;
 }
 
-// ── Audio Processing Utils (ported from WallSpace) ──────────────────────────
+// ── Utils (kept for reuse) ──────────────────────────────────────────────────
 
-/** Compute RMS level in dB from Float32 PCM buffer.
- *  Ported from WallSpace _flushPCMToWhisper silence detection. */
 export function computeRmsDb(samples: Float32Array): number {
   let sumSq = 0;
   for (let i = 0; i < samples.length; i++) {
@@ -45,104 +39,25 @@ export function computeRmsDb(samples: Float32Array): number {
   return rms > 0 ? 20 * Math.log10(rms) : -Infinity;
 }
 
-/** Filter Whisper hallucinations on silence.
- *  Ported from WallSpace whisperBridge.ts HALLUCINATION_PATTERNS + NOISE_PATTERNS. */
 export function filterHallucinations(text: string): string | null {
   const trimmed = text.trim();
   if (!trimmed) return null;
 
-  const NOISE_PATTERNS = [
-    /^\[.*?\]$/,          // [BLANK_AUDIO], [MUSIC], etc.
-    /^\(.*?\)$/,          // (music), (applause), etc.
-    /^>>?\s*/,            // >> speaker indicators
-  ];
+  const GARBAGE_WORDS = new Set([
+    'you', 'the', 'i', 'a', 'is', 'it', 'so', 'and', 'but',
+    'oh', 'uh', 'um', 'ah', 'huh', 'bye', 'ok', 'okay',
+  ]);
 
-  const HALLUCINATION_PATTERNS = [
-    /^\(.*\)$/,
-    /^you$/i,
-    /^\.+$/,
-    /^thank you\.?$/i,
-    /^thanks for watching\.?$/i,
-    /^please subscribe\.?$/i,
-  ];
+  const lower = trimmed.toLowerCase().replace(/[.,!?]+$/, '');
+  if (GARBAGE_WORDS.has(lower)) return null;
 
-  if (NOISE_PATTERNS.some(p => p.test(trimmed))) return null;
-  if (HALLUCINATION_PATTERNS.some(p => p.test(trimmed))) return null;
+  if (/^\[.*?\]$/.test(trimmed)) return null;   // [BLANK_AUDIO]
+  if (/^\(.*?\)$/.test(trimmed)) return null;   // (music)
+  if (/^\.+$/.test(trimmed)) return null;        // ...
+  if (/^thanks for watching\.?$/i.test(trimmed)) return null;
+  if (/^please subscribe\.?$/i.test(trimmed)) return null;
 
   return trimmed.replace(/^>>?\s*/, '');
-}
-
-/** Convert Float32 PCM [-1, 1] to 16-bit WAV file.
- *  Ported from WallSpace whisperBridge.ts pcmToWav, adapted to write to filesystem. */
-function pcmToWavBuffer(pcmFloat32: Float32Array, sampleRate: number): ArrayBuffer {
-  const numSamples = pcmFloat32.length;
-  const bytesPerSample = 2;
-  const numChannels = 1;
-  const dataSize = numSamples * bytesPerSample;
-  const headerSize = 44;
-  const buffer = new ArrayBuffer(headerSize + dataSize);
-  const view = new DataView(buffer);
-
-  function writeStr(offset: number, str: string) {
-    for (let i = 0; i < str.length; i++) {
-      view.setUint8(offset + i, str.charCodeAt(i));
-    }
-  }
-
-  writeStr(0, 'RIFF');
-  view.setUint32(4, headerSize + dataSize - 8, true);
-  writeStr(8, 'WAVE');
-  writeStr(12, 'fmt ');
-  view.setUint32(16, 16, true);
-  view.setUint16(20, 1, true);
-  view.setUint16(22, numChannels, true);
-  view.setUint32(24, sampleRate, true);
-  view.setUint32(28, sampleRate * numChannels * bytesPerSample, true);
-  view.setUint16(32, numChannels * bytesPerSample, true);
-  view.setUint16(34, bytesPerSample * 8, true);
-  writeStr(36, 'data');
-  view.setUint32(40, dataSize, true);
-
-  for (let i = 0; i < numSamples; i++) {
-    const s = Math.max(-1, Math.min(1, pcmFloat32[i]));
-    const val = s < 0 ? s * 0x8000 : s * 0x7FFF;
-    view.setInt16(headerSize + i * 2, Math.round(val), true);
-  }
-
-  return buffer;
-}
-
-/** Write WAV ArrayBuffer to a temporary file and return the path. */
-async function writeWavToTempFile(wavBuffer: ArrayBuffer): Promise<string> {
-  const tempDir = `${FileSystem.cacheDirectory}aeyeecho-audio/`;
-  const dirInfo = await FileSystem.getInfoAsync(tempDir);
-  if (!dirInfo.exists) {
-    await FileSystem.makeDirectoryAsync(tempDir, { intermediates: true });
-  }
-
-  const filename = `chunk_${Date.now()}.wav`;
-  const filePath = `${tempDir}${filename}`;
-
-  // Convert ArrayBuffer to base64 for FileSystem API
-  const uint8 = new Uint8Array(wavBuffer);
-  let binary = '';
-  for (let i = 0; i < uint8.length; i++) {
-    binary += String.fromCharCode(uint8[i]);
-  }
-  const base64 = btoa(binary);
-
-  await FileSystem.writeAsStringAsync(filePath, base64, {
-    encoding: FileSystem.EncodingType.Base64,
-  });
-
-  return filePath;
-}
-
-/** Clean up a temporary WAV file. */
-async function cleanupWav(filePath: string): Promise<void> {
-  try {
-    await FileSystem.deleteAsync(filePath, { idempotent: true });
-  } catch { /* ignore */ }
 }
 
 // ── TranscriptionService ────────────────────────────────────────────────────
@@ -154,24 +69,25 @@ export class TranscriptionService {
   private _active = false;
   private _sessionStartMs = 0;
 
-  // Callbacks
   private _transcriptCallbacks: TranscriptCallback[] = [];
   private _statusCallbacks: StatusCallback[] = [];
   private _amplitudeCallbacks: AmplitudeCallback[] = [];
+  private _partialCallbacks: PartialCallback[] = [];
 
-  // PCM accumulation buffer (same pattern as WallSpace)
-  private _pcmBuffer: Float32Array[] = [];
-  private _pcmSampleCount = 0;
-  private _chunkTimer: ReturnType<typeof setInterval> | null = null;
-  private _sampleRate = 16000;
-
-  // Audio capture subscription
   private _audioCaptureUnsub: (() => void) | null = null;
+  private _engine: SpeechRecognitionEngine | null = null;
 
-  // Prevent concurrent transcriptions
-  private _isTranscribing = false;
+  // Track current partial for live caption display
+  private _currentPartialText = '';
+  // Silence timer: when partial text stops changing, finalize as segment
+  private _silenceTimer: ReturnType<typeof setTimeout> | null = null;
+  // Last partial text received (for silence detection)
+  private _lastPartialText = '';
+  // Whether we're in a restart cycle (suppress stale results)
+  private _pendingRestart = false;
 
-  // ── Public API ──────────────────────────────────────────────────────────
+  // Cleanup functions for engine event listeners
+  private _engineUnsubs: Array<() => void> = [];
 
   get status(): TranscriptionStatus { return this._status; }
   get isActive(): boolean { return this._active; }
@@ -185,89 +101,46 @@ export class TranscriptionService {
     this._translationConfig = { ...this._translationConfig, ...partial };
   }
 
-  /**
-   * Start transcription with full native pipeline:
-   * 1. Determine correct model for language (multilingual vs .en)
-   * 2. Download model if needed
-   * 3. Initialize Whisper context (with GPU)
-   * 4. Start microphone audio capture at 16kHz
-   * 5. Begin chunk accumulation → Whisper inference pipeline
-   */
-  async start(
-    onModelDownloadProgress?: (percent: number) => void,
-  ): Promise<void> {
+  async start(_onModelDownloadProgress?: (percent: number) => void): Promise<void> {
     if (this._active) return;
     this._active = true;
     this._sessionStartMs = Date.now();
-
     this._setStatus('loading-model');
 
     try {
-      // Determine which model to use based on language
-      const language = this._config.autoDetectLanguage ? 'auto' : this._config.language;
-      const modelId = WhisperEngine.getModelForLanguage(this._config.modelSize, language);
+      const language: WhisperLanguage = this._config.autoDetectLanguage ? 'auto' : this._config.language;
 
-      console.log(`[A.EYE.ECHO] Language: ${language}, Model: ${modelId}`);
-
-      // Step 1: Download model if not cached
-      const isDownloaded = await WhisperEngine.isModelDownloaded(modelId);
-      if (!isDownloaded) {
-        console.log(`[A.EYE.ECHO] Downloading model ${modelId}...`);
-        await WhisperEngine.downloadModel(modelId, (progress) => {
-          onModelDownloadProgress?.(progress.percent);
-        });
+      // Check availability
+      if (!SpeechRecognitionEngine.isAvailable()) {
+        throw new Error('Speech recognition is not available on this device');
       }
 
-      if (!this._active) return; // Cancelled during download
+      console.log(`[A.EYE.ECHO] Starting speech recognition, language: ${language}`);
 
-      // Step 2: Initialize Whisper context with GPU acceleration
-      console.log(`[A.EYE.ECHO] Loading model ${modelId}...`);
-      await WhisperEngine.loadModel(modelId);
-
-      if (!this._active) return; // Cancelled during model load
-
-      // Step 3: Pre-download translation model if translation is enabled
-      if (this._translationConfig.enabled) {
-        const translationService = getTranslationService();
-        const sourceLang = language === 'auto' ? 'en' : language;
-        await translationService.ensureLanguagePair(
-          sourceLang,
-          this._translationConfig.targetLanguage,
-        );
-      }
-
-      // Step 4: Initialize audio source (microphone or system audio)
-      const isSystemAudio = this._config.source.type === 'system-audio';
-
-      if (isSystemAudio) {
-        // System audio capture is started externally by SystemAudioPanel.
-        // We just subscribe to the PCM stream here.
-        this._audioCaptureUnsub = onSystemAudioData(
-          (samples, sampleRate) => {
-            this._feedPCM(samples, sampleRate);
-          },
-        );
-      } else {
-        // Standard microphone capture
+      // Start audio capture for amplitude metering only
+      try {
         await AudioCapture.initAudioCapture();
-
-        this._audioCaptureUnsub = AudioCapture.onPCMData(
-          (samples, sampleRate) => {
-            this._feedPCM(samples, sampleRate);
-          },
-        );
-
+        this._audioCaptureUnsub = AudioCapture.onPCMData((samples, _sr) => {
+          if (!this._active) return;
+          const rmsDb = computeRmsDb(samples);
+          for (const cb of this._amplitudeCallbacks) cb(rmsDb);
+        });
         await AudioCapture.startCapture();
+      } catch (audioErr) {
+        console.warn('[A.EYE.ECHO] Audio capture for amplitude failed (non-fatal):', audioErr);
+        // Non-fatal: amplitude bars won't work but transcription will
       }
 
-      // Step 7: Start chunk flush timer
-      this._startChunkTimer();
+      // Start speech recognition engine
+      this._engine = getSpeechRecognitionEngine();
+      this._setupEngineListeners();
+      await this._engine.start(language);
 
+      if (!this._active) return;
       this._setStatus('active');
-      console.log('[A.EYE.ECHO] Transcription active (native Whisper + mic capture)');
-
+      console.log('[A.EYE.ECHO] Active — streaming speech recognition');
     } catch (err) {
-      console.error('[A.EYE.ECHO] Failed to start transcription:', err);
+      console.error('[A.EYE.ECHO] Start failed:', err);
       this._setStatus('error');
       this._active = false;
       this._cleanup();
@@ -275,45 +148,54 @@ export class TranscriptionService {
     }
   }
 
-  /** Stop transcription and release all resources. */
-  stop(): void {
+  async stop(): Promise<void> {
     this._active = false;
     this._cleanup();
     this._setStatus('idle');
-    console.log('[A.EYE.ECHO] Transcription stopped');
   }
 
-  /** Pause audio capture (model stays loaded for fast resume). */
   pause(): void {
+    this._engine?.stop();
     AudioCapture.stopCapture();
-    this._stopChunkTimer();
     if (this._status === 'active') this._setStatus('paused');
   }
 
-  /** Resume from pause (model already loaded). */
   async resume(): Promise<void> {
     if (this._status !== 'paused') return;
-    await AudioCapture.startCapture();
-    this._startChunkTimer();
+    const language: WhisperLanguage = this._config.autoDetectLanguage ? 'auto' : this._config.language;
+
+    try {
+      await AudioCapture.startCapture();
+    } catch {
+      // Non-fatal
+    }
+
+    if (this._engine) {
+      await this._engine.start(language);
+    }
     this._setStatus('active');
   }
 
-  /** Register callback for new transcript segments. */
   onTranscript(cb: TranscriptCallback): () => void {
     this._transcriptCallbacks.push(cb);
     return () => { this._transcriptCallbacks = this._transcriptCallbacks.filter(c => c !== cb); };
   }
 
-  /** Register callback for status changes. */
+  onSegmentUpdate(_cb: any): () => void { return () => {}; }
+
   onStatusChange(cb: StatusCallback): () => void {
     this._statusCallbacks.push(cb);
     return () => { this._statusCallbacks = this._statusCallbacks.filter(c => c !== cb); };
   }
 
-  /** Register callback for real-time amplitude (for vibration manager). */
   onAmplitude(cb: AmplitudeCallback): () => void {
     this._amplitudeCallbacks.push(cb);
     return () => { this._amplitudeCallbacks = this._amplitudeCallbacks.filter(c => c !== cb); };
+  }
+
+  onPartialResult(cb: PartialCallback): () => void {
+    this._partialCallbacks.push(cb);
+    return () => { this._partialCallbacks = this._partialCallbacks.filter(c => c !== cb); };
   }
 
   // ── Private ─────────────────────────────────────────────────────────────
@@ -323,170 +205,171 @@ export class TranscriptionService {
     for (const cb of this._statusCallbacks) cb(status);
   }
 
-  /**
-   * Receive PCM samples from audio capture.
-   * Accumulates into buffer for chunk-based Whisper inference.
-   */
-  private _feedPCM(samples: Float32Array, sampleRate: number): void {
-    if (!this._active) return;
-    this._sampleRate = sampleRate;
-    this._pcmBuffer.push(new Float32Array(samples));
-    this._pcmSampleCount += samples.length;
+  private _setupEngineListeners(): void {
+    if (!this._engine) return;
 
-    // Compute amplitude for vibration service
-    const rmsDb = computeRmsDb(samples);
-    for (const cb of this._amplitudeCallbacks) cb(rmsDb);
-  }
+    // Clean up old listeners
+    for (const unsub of this._engineUnsubs) unsub();
+    this._engineUnsubs = [];
 
-  private _startChunkTimer(): void {
-    this._stopChunkTimer();
-    this._pcmBuffer = [];
-    this._pcmSampleCount = 0;
+    // Result handler — silence-based segmentation with session restart.
+    // When you pause for 1.5s, we emit the full text as a segment then
+    // restart the recognition session for a clean slate.
+    const SILENCE_SEGMENT_MS = 1500;
 
-    const chunkMs = this._config.chunkDurationSec * 1000;
-    this._chunkTimer = setInterval(() => {
-      this._flushToWhisper();
-    }, chunkMs);
-  }
+    this._engineUnsubs.push(
+      this._engine.onResult((text, isFinal, confidence) => {
+        if (!this._active || this._pendingRestart) return;
 
-  private _stopChunkTimer(): void {
-    if (this._chunkTimer) {
-      clearInterval(this._chunkTimer);
-      this._chunkTimer = null;
-    }
-    this._pcmBuffer = [];
-    this._pcmSampleCount = 0;
-  }
+        const trimmed = text.trim();
+        if (!trimmed) return;
 
-  /**
-   * Concatenate buffered PCM, write WAV, send to Whisper for inference.
-   * Then optionally translate via ML Kit.
-   */
-  private async _flushToWhisper(): Promise<void> {
-    if (!this._active || this._pcmSampleCount < 100 || this._isTranscribing) return;
+        // Update live caption with the full current text
+        this._currentPartialText = trimmed;
+        for (const cb of this._partialCallbacks) cb(trimmed);
 
-    const srcRate = this._sampleRate;
-    const buffers = this._pcmBuffer;
-    const totalSamples = this._pcmSampleCount;
-
-    // Reset buffer immediately (don't lose incoming samples during transcription)
-    this._pcmBuffer = [];
-    this._pcmSampleCount = 0;
-
-    // Concatenate all chunks
-    const combined = new Float32Array(totalSamples);
-    let offset = 0;
-    for (const chunk of buffers) {
-      combined.set(chunk, offset);
-      offset += chunk.length;
-    }
-
-    // RMS silence detection (ported from WallSpace)
-    const rmsDb = computeRmsDb(combined);
-    if (rmsDb < -60) {
-      return; // Skip silent chunks — saves Whisper CPU + battery
-    }
-
-    // Timestamp this segment relative to session start
-    const nowMs = Date.now();
-    const startMs = Math.max(0, nowMs - (this._config.chunkDurationSec * 1000) - this._sessionStartMs);
-    const endMs = Math.max(0, nowMs - this._sessionStartMs);
-
-    this._isTranscribing = true;
-    let wavPath: string | null = null;
-
-    try {
-      // Convert PCM to WAV and write to temp file
-      const wavBuffer = pcmToWavBuffer(combined, srcRate);
-      wavPath = await writeWavToTempFile(wavBuffer);
-
-      // Determine language for Whisper
-      const language: WhisperLanguage = this._config.autoDetectLanguage
-        ? 'auto'
-        : this._config.language;
-
-      console.log(
-        `[A.EYE.ECHO] Transcribing ${(totalSamples / srcRate).toFixed(1)}s chunk ` +
-        `(${totalSamples} samples @ ${srcRate}Hz, level: ${rmsDb.toFixed(1)}dB, lang: ${language})`,
-      );
-
-      // Run Whisper inference via native module
-      const result = await WhisperEngine.transcribeFile(wavPath, language);
-
-      // Filter hallucinations (same patterns as WallSpace whisperBridge)
-      const cleanText = filterHallucinations(result.text);
-
-      if (cleanText && this._active) {
-        const segment: TranscriptSegment = {
-          id: nextId(),
-          text: cleanText,
-          source: 'speech',
-          detectedLanguage: result.detectedLanguage as WhisperLanguage | undefined,
-          startMs,
-          endMs,
-          speakerId: null,
-          isFinal: true,
-          confidence: 1.0,
-        };
-
-        // Run translation if enabled
-        if (this._translationConfig.enabled) {
-          try {
-            const translationService = getTranslationService();
-            const sourceLang = (result.detectedLanguage || this._config.language) as string;
-            const targetLang = this._translationConfig.targetLanguage;
-
-            // Don't translate if source and target are the same
-            if (sourceLang !== targetLang) {
-              segment.translatedText = await translationService.translate(
-                cleanText,
-                sourceLang,
-                targetLang,
-              );
-            }
-          } catch (err) {
-            console.error('[A.EYE.ECHO] Translation error:', err);
-            // Don't block caption display if translation fails
-          }
+        // Reset silence timer on every new partial
+        if (this._silenceTimer) {
+          clearTimeout(this._silenceTimer);
+          this._silenceTimer = null;
         }
 
-        console.log(
-          `[A.EYE.ECHO] Transcript: "${cleanText}"` +
-          (segment.translatedText ? ` → "${segment.translatedText}"` : ''),
-        );
+        if (!isFinal) {
+          // Schedule: if text doesn't change for 1.5s, finalize and restart
+          this._lastPartialText = trimmed;
+          this._silenceTimer = setTimeout(() => {
+            if (!this._active) return;
+            this._finalizeAndRestart(trimmed, confidence);
+          }, SILENCE_SEGMENT_MS);
+          return;
+        }
 
-        for (const cb of this._transcriptCallbacks) cb(segment);
+        // isFinal — session ending (55s restart or stop)
+        // Emit whatever text we have
+        this._emitSegment(trimmed, confidence);
+      }),
+    );
+
+    // Session restart handler — clear state for new session
+    this._engineUnsubs.push(
+      this._engine.onSessionRestart(() => {
+        console.log('[A.EYE.ECHO] Session restarted');
+        this._lastPartialText = '';
+        this._pendingRestart = false;
+        if (this._silenceTimer) {
+          clearTimeout(this._silenceTimer);
+          this._silenceTimer = null;
+        }
+      }),
+    );
+
+    // Error handler
+    this._engineUnsubs.push(
+      this._engine.onError((error, message) => {
+        console.error(`[A.EYE.ECHO] Recognition error: ${error} — ${message}`);
+        // The engine auto-restarts on 'end' event, so most errors recover automatically
+      }),
+    );
+  }
+
+  /** Emit text as a segment then restart the recognition session for a clean slate. */
+  private _finalizeAndRestart(text: string, confidence: number): void {
+    this._emitSegment(text, confidence);
+
+    // Restart session so the next utterance starts fresh (no accumulated text)
+    this._pendingRestart = true;
+    this._currentPartialText = '';
+    for (const cb of this._partialCallbacks) cb('');
+
+    // Use the engine's internal restart which handles stop→start cleanly
+    if (this._engine) {
+      console.log('[A.EYE.ECHO] Restarting session for next segment');
+      // Stop triggers end event → auto-restart in engine
+      try {
+        const { ExpoSpeechRecognitionModule } = require('expo-speech-recognition');
+        ExpoSpeechRecognitionModule.stop();
+      } catch {
+        this._pendingRestart = false;
       }
-    } catch (err) {
-      console.error('[A.EYE.ECHO] Transcription error:', err);
-    } finally {
-      this._isTranscribing = false;
-      if (wavPath) await cleanupWav(wavPath);
     }
+  }
+
+  /** Create and emit a TranscriptSegment from recognized text. */
+  private _emitSegment(text: string, confidence: number): void {
+    const cleanText = filterHallucinations(text);
+    if (!cleanText) {
+      console.log(`[A.EYE.ECHO] Filtered: "${text}"`);
+      return;
+    }
+
+    const nowMs = Date.now();
+    const endMs = Math.max(0, nowMs - this._sessionStartMs);
+    const wordCount = cleanText.split(/\s+/).length;
+    const estimatedDurationMs = wordCount * 150;
+    const startMs = Math.max(0, endMs - estimatedDurationMs);
+
+    const segment: TranscriptSegment = {
+      id: nextId(),
+      text: cleanText,
+      source: 'speech',
+      startMs,
+      endMs,
+      speakerId: null,
+      isFinal: true,
+      confidence: confidence >= 0 ? confidence : 0.9,
+    };
+
+    if (this._translationConfig.enabled) {
+      this._translateAndEmit(segment, cleanText);
+    } else {
+      console.log(`[A.EYE.ECHO] → "${cleanText}"`);
+      for (const cb of this._transcriptCallbacks) cb(segment);
+    }
+  }
+
+  private async _translateAndEmit(segment: TranscriptSegment, cleanText: string): Promise<void> {
+    try {
+      const ts = getTranslationService();
+      const src = (this._config.language || 'en') as string;
+      const tgt = this._translationConfig.targetLanguage;
+      if (src !== tgt) {
+        segment.translatedText = await ts.translate(cleanText, src, tgt);
+      }
+    } catch {
+      // Translation failed — still emit the segment
+    }
+
+    console.log(`[A.EYE.ECHO] → "${cleanText}"`);
+    for (const cb of this._transcriptCallbacks) cb(segment);
   }
 
   private _cleanup(): void {
-    this._stopChunkTimer();
+    // Stop speech recognition
+    for (const unsub of this._engineUnsubs) unsub();
+    this._engineUnsubs = [];
+    this._engine?.stop();
+    this._engine = null;
 
-    // Stop audio capture (only stop mic if we started it)
-    if (this._config.source.type !== 'system-audio') {
-      AudioCapture.stopCapture();
-    }
+    // Stop audio capture
+    AudioCapture.stopCapture();
     if (this._audioCaptureUnsub) {
       this._audioCaptureUnsub();
       this._audioCaptureUnsub = null;
     }
 
-    // Release Whisper context
-    WhisperEngine.releaseContext();
-
+    this._currentPartialText = '';
+    this._lastPartialText = '';
+    this._pendingRestart = false;
+    if (this._silenceTimer) {
+      clearTimeout(this._silenceTimer);
+      this._silenceTimer = null;
+    }
     this._transcriptCallbacks = [];
     this._statusCallbacks = [];
     this._amplitudeCallbacks = [];
+    this._partialCallbacks = [];
   }
 }
-
-// ── Singleton ───────────────────────────────────────────────────────────────
 
 let _instance: TranscriptionService | null = null;
 

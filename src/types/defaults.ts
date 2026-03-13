@@ -8,6 +8,7 @@ import type {
   CaptionStyle,
   CaptionTheme,
   TranscriptionConfig,
+  TranscriptionEngine,
   TranslationConfig,
   SignLanguageConfig,
   VibrationConfig,
@@ -20,13 +21,14 @@ export const DEFAULT_CAPTION_STYLE: CaptionStyle = {
   color: '#FFFFFF',
   outlineColor: '#000000',
   outlineWidth: 3,
-  bgColor: '#000000',
-  bgOpacity: 70,
-  position: 'bottom',
-  maxLines: 3,
+  bgColor: '#1A1A2E',
+  bgOpacity: 85,
+  position: 'center',
+  maxLines: 4,
 };
 
 export const DEFAULT_TRANSCRIPTION_CONFIG: TranscriptionConfig = {
+  engine: 'speech-recognition',
   source: { type: 'microphone' },
   chunkDurationSec: 4,
   modelSize: 'base.en',

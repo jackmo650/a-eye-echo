@@ -6,6 +6,8 @@
 
 // ── Transcription ───────────────────────────────────────────────────────────
 
+export type TranscriptionEngine = 'speech-recognition' | 'whisper';
+
 export type TranscriptionStatus =
   | 'idle'
   | 'loading-model'
@@ -33,11 +35,13 @@ export type AudioSource =
   | { type: 'stream'; url: string };   // HLS/DASH live stream
 
 export interface TranscriptionConfig {
+  /** Transcription engine: 'speech-recognition' (iOS native) or 'whisper' (on-device model) */
+  engine?: TranscriptionEngine;
   /** Audio source to capture from */
   source: AudioSource;
-  /** Chunk duration in seconds (3-10, default 4 for mobile) */
+  /** Chunk duration in seconds (3-10, whisper only) */
   chunkDurationSec: number;
-  /** Whisper model size */
+  /** Whisper model size (whisper engine only) */
   modelSize: WhisperModel;
   /** Language code (default 'en', 'auto' for detection) */
   language: WhisperLanguage;

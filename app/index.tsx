@@ -22,6 +22,7 @@ import {
   TouchableOpacity,
   StyleSheet,
   ScrollView,
+  Alert,
   useWindowDimensions,
 } from 'react-native';
 import {
@@ -63,6 +64,8 @@ export default function LiveScreen() {
     endSession,
     addSegment,
     addOrUpdateSpeaker,
+    updateSegment,
+    setCurrentText,
   } = useTranscriptStore();
 
   const [audioLevel, setAudioLevel] = useState(-Infinity);
@@ -149,6 +152,11 @@ export default function LiveScreen() {
       }
     });
 
+    // Register segment update callback (same slice re-transcribed → update in place)
+    service.onSegmentUpdate((id, text, translatedText) => {
+      updateSegment(id, text, translatedText);
+    });
+
     service.onStatusChange(setStatus);
 
     service.onAmplitude((rmsDb) => {
@@ -159,6 +167,11 @@ export default function LiveScreen() {
       if (settings.cameraEnabled) {
         speakerService.feedAudioAmplitude(rmsDb);
       }
+    });
+
+    // Register partial result callback for live streaming captions
+    service.onPartialResult((text) => {
+      setCurrentText(text);
     });
 
     // Start camera-based speaker detection if enabled
@@ -179,18 +192,24 @@ export default function LiveScreen() {
     }
 
     try {
-      // Start transcription — handles model download, Whisper init, mic capture
-      await service.start((percent) => {
-        setIsDownloading(true);
-        setDownloadProgress(percent);
-      });
-      setIsDownloading(false);
-    } catch (err) {
+      // Start transcription — uses native speech recognition (no model download)
+      await service.start();
+    } catch (err: any) {
       console.error('[LiveScreen] Start failed:', err);
-      setIsDownloading(false);
       endSession();
+      const msg = err?.message || String(err);
+      if (msg.includes('not available') || msg.includes('not granted') || msg.includes('is null')) {
+        Alert.alert(
+          'Speech Recognition Unavailable',
+          'Live transcription requires speech recognition and microphone permissions. ' +
+          'Please enable them in Settings, or ensure you are running a development build.',
+          [{ text: 'OK' }],
+        );
+      } else {
+        Alert.alert('Start Failed', msg, [{ text: 'OK' }]);
+      }
     }
-  }, [settings, sourceMode, startSession, addSegment, setStatus, addOrUpdateSpeaker, endSession, speakerService]);
+  }, [settings, sourceMode, startSession, addSegment, updateSegment, setStatus, setCurrentText, addOrUpdateSpeaker, endSession, speakerService]);
 
   const handleStop = useCallback(async () => {
     serviceRef.current?.stop();
@@ -262,16 +281,34 @@ export default function LiveScreen() {
       {/* Caption display area — pinch to zoom */}
       <GestureDetector gesture={pinchGesture}>
       <View style={styles.captionArea}>
-        <CaptionDisplay
-          text={currentText}
-          translatedText={latestSegment?.translatedText}
-          showOriginal={settings.translation.showOriginal}
-          style={settings.caption}
-          speaker={currentSpeaker}
-          source={latestSegment?.source}
-          width={width}
-          height={height - 180}
-        />
+        {/* Live caption text */}
+        {isActive && currentText.trim() !== '' && (
+          <View style={styles.liveCaptionContainer}>
+            {currentSpeaker && (
+              <Text style={[styles.liveSpeakerLabel, currentSpeaker.color ? { color: currentSpeaker.color } : null]}>
+                {currentSpeaker.label}
+              </Text>
+            )}
+            <Text
+              style={[
+                styles.liveCaptionText,
+                { fontSize: settings.caption.fontSize },
+                currentSpeaker?.color ? { color: currentSpeaker.color } : null,
+              ]}
+              numberOfLines={settings.caption.maxLines}
+              accessible
+              accessibilityRole="text"
+              accessibilityLabel={`Caption: ${currentText}`}
+            >
+              {currentText}
+            </Text>
+            {latestSegment?.translatedText && settings.translation.showOriginal && (
+              <Text style={[styles.liveTranslatedText, { fontSize: settings.caption.fontSize * 0.6 }]}>
+                {latestSegment.translatedText}
+              </Text>
+            )}
+          </View>
+        )}
 
         {/* Status indicator */}
         {status === 'loading-model' && !isDownloading && (
@@ -424,7 +461,36 @@ const styles = StyleSheet.create({
   },
   captionArea: {
     flex: 1,
-    position: 'relative',
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+  },
+  liveCaptionContainer: {
+    backgroundColor: 'rgba(26, 26, 46, 0.85)',
+    borderRadius: 16,
+    paddingHorizontal: 20,
+    paddingVertical: 16,
+    maxWidth: '95%',
+    alignItems: 'center',
+  },
+  liveCaptionText: {
+    color: '#FFFFFF',
+    textAlign: 'center',
+    lineHeight: 62,
+  },
+  liveSpeakerLabel: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#4FC3F7',
+    marginBottom: 4,
+    opacity: 0.8,
+  },
+  liveTranslatedText: {
+    color: '#FFFFFF',
+    opacity: 0.6,
+    fontStyle: 'italic',
+    textAlign: 'center',
+    marginTop: 8,
   },
   statusBanner: {
     position: 'absolute',

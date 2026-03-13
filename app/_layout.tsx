@@ -8,6 +8,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { Tabs } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { useKeepAwake } from 'expo-keep-awake';
+import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { ErrorBoundary } from '../src/components/ErrorBoundary';
 import { OnboardingModal } from '../src/components/OnboardingModal';
 import { useSettingsStore } from '../src/stores/useSettingsStore';
@@ -120,8 +121,10 @@ function AppContent() {
 
 export default function RootLayout() {
   return (
-    <ErrorBoundary>
-      <AppContent />
-    </ErrorBoundary>
+    <GestureHandlerRootView style={{ flex: 1 }}>
+      <ErrorBoundary>
+        <AppContent />
+      </ErrorBoundary>
+    </GestureHandlerRootView>
   );
 }

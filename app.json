@@ -6,7 +6,7 @@
     "orientation": "default",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "dark",
-    "newArchEnabled": true,
+    "newArchEnabled": false,
     "scheme": "aeyeecho",
     "splash": {
       "image": "./assets/splash-icon.png",
@@ -16,6 +16,7 @@
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.wallspace.aeyeecho",
+      "appleTeamId": "9K65QDV874",
       "infoPlist": {
         "NSMicrophoneUsageDescription": "A.EYE.ECHO needs microphone access to transcribe live speech into captions.",
         "NSSpeechRecognitionUsageDescription": "A.EYE.ECHO uses on-device speech recognition for live captioning.",
@@ -45,7 +46,8 @@
         {
           "microphonePermission": "A.EYE.ECHO needs microphone access to transcribe live speech into captions."
         }
-      ]
+      ],
+      "expo-speech-recognition"
     ],
     "extra": {
       "router": {

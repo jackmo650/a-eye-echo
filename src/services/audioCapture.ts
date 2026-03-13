@@ -31,7 +31,7 @@ type PCMCallback = (samples: Float32Array, sampleRate: number) => void;
 const SAMPLE_RATE = 16000;   // 16kHz — Whisper's native rate, no resampling
 const CHANNELS = 1;           // Mono
 const BITS_PER_SAMPLE = 16;   // 16-bit PCM
-const BUFFER_SIZE = 4096;     // ~256ms at 16kHz
+const BUFFER_SIZE = 8192;     // ~512ms at 16kHz — larger buffer for reliable capture
 
 // ── State ───────────────────────────────────────────────────────────────────
 
@@ -95,6 +95,13 @@ function int16ToFloat32(int16Buffer: Buffer): Float32Array {
  */
 export async function initAudioCapture(): Promise<void> {
   if (_initialized) return;
+
+  if (!LiveAudioStream) {
+    throw new Error(
+      'Audio capture native module not available. ' +
+      'This feature requires a development build (expo prebuild).'
+    );
+  }
 
   await LiveAudioStream.init({
     sampleRate: SAMPLE_RATE,

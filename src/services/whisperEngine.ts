@@ -215,6 +215,14 @@ export async function loadModel(modelId: WhisperModel): Promise<void> {
 
   console.log(`[Whisper] Initializing context for ${modelId}...`);
 
+  if (!initWhisper) {
+    throw new Error(
+      'Whisper native module not available. ' +
+      'This feature requires a development build (expo prebuild). ' +
+      'Run "npx expo prebuild" then rebuild with Xcode or Android Studio.'
+    );
+  }
+
   _context = await initWhisper({
     filePath: modelPath,
     useGpu: true,          // Metal on iOS, GPU on Android
@@ -279,12 +287,14 @@ export async function transcribeFile(
 
 /**
  * Abort current transcription (if running).
+ * Also resets _isTranscribing flag so the next call isn't blocked.
  */
 export function abortTranscription(): void {
   if (_transcribeAbort) {
     _transcribeAbort();
     _transcribeAbort = null;
   }
+  _isTranscribing = false;
 }
 
 /**
@@ -310,6 +320,14 @@ export function getCurrentModel(): { modelId: WhisperModel; gpu: boolean } | nul
     modelId: _currentModelId,
     gpu: _context.gpu,
   };
+}
+
+/**
+ * Get the raw WhisperContext for use with RealtimeTranscriber.
+ * The context must have been loaded via loadModel() first.
+ */
+export function getRawContext(): any {
+  return _context;
 }
 
 /**
