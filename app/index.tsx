@@ -49,7 +49,7 @@ import * as db from '../src/services/database';
 import { getCaptionNetworkService } from '../src/services/captionNetworkService';
 import type { TranscriptSegment } from '../src/types';
 
-type AudioSourceMode = 'microphone' | 'url' | 'system-audio';
+type AudioSourceMode = 'microphone' | 'url';
 
 export default function LiveScreen() {
   const { width, height } = useWindowDimensions();
@@ -451,7 +451,7 @@ export default function LiveScreen() {
           </View>
         )}
 
-        {status === 'idle' && !isActive && sourceMode !== 'url' && (
+        {status === 'idle' && !isActive && (sourceMode as string) !== 'url' && (
           <ScrollView
             style={styles.idleScroll}
             contentContainerStyle={styles.idleScrollContent}
@@ -473,10 +473,10 @@ export default function LiveScreen() {
                 </Text>
               </TouchableOpacity>
               <TouchableOpacity
-                style={[styles.sourceChip, sourceMode === 'url' && styles.sourceChipActive]}
+                style={[styles.sourceChip, (sourceMode as string) === 'url' && styles.sourceChipActive]}
                 onPress={() => setSourceMode('url')}
               >
-                <Text style={[styles.sourceChipText, sourceMode === 'url' && styles.sourceChipTextActive]}>
+                <Text style={[styles.sourceChipText, (sourceMode as string) === 'url' && styles.sourceChipTextActive]}>
                   URL / Video
                 </Text>
               </TouchableOpacity>

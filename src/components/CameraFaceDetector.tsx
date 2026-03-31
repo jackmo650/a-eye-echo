@@ -201,18 +201,11 @@ function RealCamera({ cameraPosition, isActive, showPreview = true, signLanguage
         frameProcessor={frameProcessor}
         fps={15}
         pixelFormat="yuv"
+        audio={false}
       />
-      {/* Speaking/signing indicator overlay */}
+      {/* Speaking indicator overlay */}
       <View style={styles.overlay}>
         <SpeakingIndicator />
-        {signLanguageEnabled && (
-          <View style={styles.signBadge}>
-            <Text style={styles.signBadgeText}>ASL [{_handPluginStatus}]</Text>
-          </View>
-        )}
-        <View style={styles.signBadge}>
-          <Text style={styles.signBadgeText}>{handDebug}</Text>
-        </View>
       </View>
     </View>
   );
